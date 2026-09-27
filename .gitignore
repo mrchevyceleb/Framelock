@@ -1,0 +1,9 @@
+bin/
+obj/
+.dev/
+publish/
+*.user
+.vs/
+# FFmpeg binaries are fetched by tools/get-ffmpeg.ps1
+third_party/ffmpeg/*.dll
+third_party/ffmpeg/*.exe
