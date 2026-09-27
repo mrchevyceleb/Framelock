@@ -5,7 +5,7 @@ using Framelock.Core;
 
 namespace Framelock.Encoding;
 
-public sealed record FileSinkResult(string Path, bool Success, long DurationUs, long Bytes, IReadOnlyList<Chapter> Markers, string? Error);
+public sealed record FileSinkResult(string Path, bool Success, long DurationUs, long Bytes, IReadOnlyList<Chapter> Markers, string? Error, string? Warning = null);
 
 /// <summary>
 /// Writes one recording file on its own thread. Every cut (start, pause, resume, stop, split) lands exactly on a forced
@@ -15,7 +15,12 @@ public sealed record FileSinkResult(string Path, bool Success, long DurationUs, 
 public sealed class FileSink : IPacketSink
 {
     private enum State { WaitingStart, Active, Cutting, Paused, Done }
-    private enum CtlKind { Pause, Resume, Stop, Marker }
+    private enum CtlKind { Pause, Resume, Stop, Abort, Marker }
+
+    /// <summary>Backlog at which the disk is considered unable to keep up (~50 s of 4K120 at 150 Mbps).</summary>
+    private const long MaxQueuedBytes = 1L << 30;
+    /// <summary>How long a pause/stop waits for its keyframe before cutting where the video ends (encoder stalled or gone).</summary>
+    private const int CutKeyframeTimeoutMs = 3000;
     private readonly record struct Ctl(CtlKind Kind, long AtUs, string? Label = null);
 
     private readonly BlockingCollection<EncodedPacket> _queue = new(new ConcurrentQueue<EncodedPacket>());
@@ -36,6 +41,10 @@ public sealed class FileSink : IPacketSink
     private bool _cutIsStop;
     private long _cutKeyUs;              // keyframe time where the current segment ended
     private long _cutDecidedAt;          // Stopwatch ticks
+    private long _cutRequestedAt;        // Stopwatch ticks
+    private long _queuedBytes;
+    private volatile bool _overflow;
+    private string? _warning;
     private readonly HashSet<int> _audioDoneForCut = new();
     private long? _pendingResumeUs;
     private readonly List<EncodedPacket> _heldAudio = new();
@@ -63,15 +72,25 @@ public sealed class FileSink : IPacketSink
 
     public void Write(EncodedPacket packet)
     {
-        if (_queue.IsAddingCompleted) { packet.Dispose(); return; }
+        if (_queue.IsAddingCompleted || _overflow) { packet.Dispose(); return; }
+        if (Interlocked.Add(ref _queuedBytes, packet.Size) > MaxQueuedBytes)
+        {
+            // The drive can't keep up: stop taking packets and finalize what's queued rather than run out of memory.
+            _overflow = true;
+            Interlocked.Add(ref _queuedBytes, -packet.Size);
+            packet.Dispose();
+            return;
+        }
         try { _queue.Add(packet); }
-        catch (InvalidOperationException) { packet.Dispose(); }
+        catch (InvalidOperationException) { Interlocked.Add(ref _queuedBytes, -packet.Size); packet.Dispose(); }
     }
 
     public void EndOfStream() => _eos = true;
     public void Pause(long atUs) => _control.Enqueue(new Ctl(CtlKind.Pause, atUs));
     public void Resume(long atUs) => _control.Enqueue(new Ctl(CtlKind.Resume, atUs));
     public void Stop(long atUs) => _control.Enqueue(new Ctl(CtlKind.Stop, atUs));
+    /// <summary>Stop without waiting for another keyframe (the video encoder died).</summary>
+    public void Abort() => _control.Enqueue(new Ctl(CtlKind.Abort, 0));
     public void AddMarker(long timelineUs, string label) => _control.Enqueue(new Ctl(CtlKind.Marker, timelineUs, label));
 
     // ---------------------------------------------------------------- writer thread
@@ -85,6 +104,7 @@ public sealed class FileSink : IPacketSink
                 ProcessControl();
                 if (_queue.TryTake(out var p, 50))
                 {
+                    Interlocked.Add(ref _queuedBytes, -p.Size);
                     try { Handle(p); }
                     catch { p.Dispose(); throw; }
                 }
@@ -113,16 +133,21 @@ public sealed class FileSink : IPacketSink
                     }
                     break;
                 case CtlKind.Pause:
-                    if (_state == State.Active) { _cutRequestUs = c.AtUs; _cutIsStop = false; }
+                    if (_state == State.Active) { _cutRequestUs = c.AtUs; _cutIsStop = false; _cutRequestedAt = Stopwatch.GetTimestamp(); }
                     break;
                 case CtlKind.Resume:
                     if (_state == State.Paused) { _state = State.WaitingStart; _startAtUs = c.AtUs; }
                     else _pendingResumeUs = c.AtUs; // cut still in progress
                     break;
                 case CtlKind.Stop:
-                    if (_state is State.Active) { _cutRequestUs = c.AtUs; _cutIsStop = true; }
+                    if (_state is State.Active) { _cutRequestUs = c.AtUs; _cutIsStop = true; _cutRequestedAt = Stopwatch.GetTimestamp(); }
                     else if (_state == State.Cutting) _cutIsStop = true;
                     else _state = State.Done; // waiting/paused: nothing more to write
+                    break;
+                case CtlKind.Abort:
+                    _cutIsStop = true;
+                    if (_state is State.Active or State.Cutting) CutAtVideoEnd();
+                    else _state = State.Done;
                     break;
             }
         }
@@ -243,8 +268,35 @@ public sealed class FileSink : IPacketSink
         // Held audio past the cut is kept for the next segment (filtered by its start keyframe).
     }
 
+    /// <summary>Ends the current segment where its video ends, without waiting for a keyframe.</summary>
+    private void CutAtVideoEnd()
+    {
+        _cutKeyUs = _mux.MaxVideoEndUs + _offsetUs; // file time → timeline time
+        _cutRequestUs = null;
+        _cutDecidedAt = Stopwatch.GetTimestamp();
+        _state = State.Cutting;
+        var held = _heldAudio.ToList();
+        _heldAudio.Clear();
+        foreach (var a in held) HandleAudio(a);
+        CompleteCut();
+    }
+
     private void CheckTimeouts()
     {
+        if (_state == State.Active && _cutRequestUs != null && Stopwatch.GetElapsedTime(_cutRequestedAt).TotalMilliseconds > CutKeyframeTimeoutMs)
+        {
+            Log.Warn($"No keyframe arrived for the requested cut in {Path}; cutting at the last frame");
+            CutAtVideoEnd();
+        }
+        // Backlog overflow: new packets are refused; once what was queued is on disk, end the file cleanly.
+        if (_overflow && _queue.Count == 0 && _state != State.Done && _warning == null)
+        {
+            _warning = "The drive couldn't keep up, so the recording was stopped early. Try a faster drive or a lower bitrate.";
+            Log.Error($"Write backlog over {MaxQueuedBytes / 1048576} MB for {Path}; stopping");
+            _cutIsStop = true;
+            if (_state is State.Active or State.Cutting) CutAtVideoEnd();
+            else _state = State.Done;
+        }
         if (_state == State.Cutting)
         {
             // An audio track may have gone quiet (device removed) - don't wait forever for it.
@@ -285,7 +337,7 @@ public sealed class FileSink : IPacketSink
             try { if (File.Exists(Path) && new FileInfo(Path).Length < 64 * 1024) File.Delete(Path); } catch { }
         }
         Log.Info($"Recording finished: {Path} ({duration / 1e6:F1}s, {_mux.BytesWritten / 1048576.0:F1} MB){(ok ? "" : " - " + _error)}");
-        _done.TrySetResult(new FileSinkResult(Path, ok && _error == null, duration, _mux.BytesWritten, _markers.ToList(), _error));
+        _done.TrySetResult(new FileSinkResult(Path, ok && _error == null, duration, _mux.BytesWritten, _markers.ToList(), _error, _warning));
     }
 
     public static List<Chapter> WithStartChapter(IReadOnlyList<Chapter> markers)

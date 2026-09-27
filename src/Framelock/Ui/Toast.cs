@@ -44,6 +44,8 @@ public static class Toast
             Topmost = true,
             ResizeMode = ResizeMode.NoResize,
             Width = 400,
+            // Sized to the cards (not a tall transparent strip) so it never sits over clicks meant for the desktop/game.
+            SizeToContent = SizeToContent.Height,
             Content = _stack,
             Title = "Framelock notifications",
         };
@@ -53,15 +55,16 @@ public static class Toast
             Native.MakeToolWindow(h, true);
             Native.ExcludeFromCapture(h, true);
         };
+        _host.SizeChanged += (_, _) => PositionHost();
         _host.Closed += (_, _) => { _host = null; _stack = null; };
     }
 
     private static void PositionHost()
     {
         var wa = SystemParameters.WorkArea; // primary monitor, DIPs
-        _host!.Height = Math.Min(wa.Height, 640);
+        _host!.MaxHeight = wa.Height;
         _host.Left = wa.Right - _host.Width;
-        _host.Top = wa.Bottom - _host.Height;
+        _host.Top = wa.Bottom - (_host.ActualHeight > 0 ? _host.ActualHeight : 0);
     }
 
     private static void ShowCore(Notification n)

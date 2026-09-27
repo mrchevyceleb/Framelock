@@ -101,7 +101,12 @@ public sealed class HudWindow : Window
         };
         Loaded += (_, _) =>
         {
-            if (_lastPos is Point p) { Left = p.X; Top = p.Y; return; }
+            // Reuse the dragged position only if it's still on the desktop (a monitor may have been unplugged).
+            if (_lastPos is Point p
+                && p.X >= SystemParameters.VirtualScreenLeft && p.Y >= SystemParameters.VirtualScreenTop
+                && p.X + ActualWidth <= SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth
+                && p.Y + ActualHeight <= SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight)
+            { Left = p.X; Top = p.Y; return; }
             var wa = SystemParameters.WorkArea;
             Left = wa.Left + (wa.Width - ActualWidth) / 2;
             Top = wa.Top + 8;

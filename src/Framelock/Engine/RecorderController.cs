@@ -447,6 +447,31 @@ public sealed class RecorderController : ObservableObject, IDisposable
     private async Task OnSinkCompleted(FileSink sink, string finalPath, bool crashSafe, ContainerFormat container, CapturePipeline p, FileSinkResult r)
     {
         p.Hub.Remove(sink);
+        // The writer ended on its own (disk error, drive too slow): the recording is over.
+        bool unexpected = _sink == sink && IsRecording;
+        if (unexpected)
+        {
+            _sink = null;
+            State = RecorderState.Finalizing;
+            SoundFx.Stop();
+            ApplyRecordingPriority(false);
+        }
+        try { await FinishFileAsync(finalPath, crashSafe, container, r); }
+        finally
+        {
+            if (unexpected)
+            {
+                State = RecorderState.Idle;
+                Elapsed = TimeSpan.Zero;
+                FileSize = "";
+                _ = StopEncoderIfUnused();
+                UpdateLifecycle();
+            }
+        }
+    }
+
+    private async Task FinishFileAsync(string finalPath, bool crashSafe, ContainerFormat container, FileSinkResult r)
+    {
         if (!r.Success)
         {
             Notify?.Invoke(new Notification("Recording failed", r.Error ?? "Unknown error", r.Path, IsError: true));
@@ -466,14 +491,17 @@ public sealed class RecorderController : ObservableObject, IDisposable
             catch (Exception ex)
             {
                 Log.Error("Remux failed; keeping MKV", ex);
-                var mkv = Path.ChangeExtension(finalPath, ".mkv");
-                try { File.Move(r.Path, UniquePath(mkv)); result = UniquePath(mkv); } catch { }
+                var mkv = UniquePath(Path.ChangeExtension(finalPath, ".mkv"));
+                try { File.Move(r.Path, mkv); result = mkv; } catch (Exception moveEx) { Log.Warn("Keeping the .recording.mkv name: " + moveEx.Message); }
                 Notify?.Invoke(new Notification("Kept as MKV", $"Converting to {container} failed ({ex.Message}). Your recording is safe as MKV.", result, true));
             }
         }
         if (Settings.SaveMarkers && r.Markers.Count > 0) WriteChapterFile(result, r.Markers);
         var size = new FileInfo(result).Exists ? new FileInfo(result).Length : r.Bytes;
-        Notify?.Invoke(new Notification("Recording saved", $"{Path.GetFileName(result)} · {FormatDuration(TimeSpan.FromMicroseconds(r.DurationUs))} · {FormatBytes(size)}", result));
+        var saved = $"{Path.GetFileName(result)} · {FormatDuration(TimeSpan.FromMicroseconds(r.DurationUs))} · {FormatBytes(size)}";
+        Notify?.Invoke(r.Warning != null
+            ? new Notification("Recording stopped early", r.Warning + Environment.NewLine + saved, result, IsError: true)
+            : new Notification("Recording saved", saved, result));
         if (State == RecorderState.Idle) StatusText = "Saved " + Path.GetFileName(result);
     }
 
@@ -501,14 +529,26 @@ public sealed class RecorderController : ObservableObject, IDisposable
         }
     }
 
-    public async Task StopRecordingAsync()
+    public Task StopRecordingAsync() => StopRecordingAsync(abort: false);
+
+    private Task? _stopping;
+
+    /// <param name="abort">The video encoder is gone: end the file at its last frame instead of waiting for a keyframe.</param>
+    private Task StopRecordingAsync(bool abort)
+    {
+        var t = StopRecordingCoreAsync(abort);
+        if (!t.IsCompleted) _stopping = t; // a no-op call (already stopping) must not hide the real stop from exit
+        return t;
+    }
+
+    private async Task StopRecordingCoreAsync(bool abort)
     {
         if (State == RecorderState.Starting) { State = RecorderState.Idle; _ = StopEncoderIfUnused(); return; }
         if (!IsRecording || _sink == null || _pipeline == null) return;
         var p = _pipeline;
         var sink = _sink;
-        long t = p.RequestKeyframe();
-        sink.Stop(t);
+        if (abort) sink.Abort();
+        else sink.Stop(p.RequestKeyframe());
         _sink = null;
         State = RecorderState.Finalizing;
         StatusText = "Finishing…";
@@ -558,7 +598,8 @@ public sealed class RecorderController : ObservableObject, IDisposable
         if (p == null || _sink == null || !IsRecording) return;
         MarkerCount++;
         var label = $"Marker {MarkerCount}";
-        _sink.AddMarker(p.NowUs, label);
+        // While paused the file is frozen at the pause point; the live clock would land past the end of the file.
+        _sink.AddMarker(State == RecorderState.Paused ? _pauseStartUs : p.NowUs, label);
         Notify?.Invoke(new Notification("Marker added", $"{label} at {FormatDuration(Elapsed)}"));
         SoundFx.Tick();
     }
@@ -671,7 +712,16 @@ public sealed class RecorderController : ObservableObject, IDisposable
     private void OnEncoderFailed(string msg)
     {
         Notify?.Invoke(new Notification("Encoder error", msg, IsError: true));
-        if (IsRecording) _ = StopRecordingAsync();
+        // No more video packets will come: the replay buffer would only collect audio.
+        if (_replay != null && _pipeline != null)
+        {
+            _pipeline.Hub.Remove(_replay);
+            _replay.Dispose();
+            _replay = null;
+            ReplayActive = false;
+            ReplayInfo = "";
+        }
+        if (IsRecording) _ = StopRecordingAsync(abort: true);
     }
 
     private void OnFatal(Exception ex)
@@ -774,21 +824,34 @@ public sealed class RecorderController : ObservableObject, IDisposable
         _ => $"{b / 1024.0:F0} KB",
     };
 
+    private bool _shutDown;
+
+    /// <summary>Stops an active recording and waits (bounded) for every file still being finalized, including a stop
+    /// or remux already in flight. The engine stays usable, so a cancelled logoff leaves Framelock working.</summary>
+    public void FinishRecordingBlocking()
+    {
+        try
+        {
+            var tasks = new List<Task>(_finalizing);
+            if (IsRecording) tasks.Add(StopRecordingAsync());
+            else if (_stopping is { IsCompleted: false } s) tasks.Add(s);
+            if (tasks.Count == 0) return;
+            var all = Task.WhenAll(tasks);
+            var sw = Stopwatch.StartNew();
+            while (!all.IsCompleted && sw.ElapsedMilliseconds < 15000)
+                _ui.Invoke(DispatcherPriority.Background, () => { });
+            if (!all.IsCompleted) Log.Warn("Finalizing didn't finish within 15 s");
+        }
+        catch (Exception ex) { Log.Error("Stopping the recording failed", ex); }
+    }
+
     /// <summary>Stops everything; waits for files to be finalized (bounded).</summary>
     public void Shutdown()
     {
+        if (_shutDown) return;
+        _shutDown = true;
         _tick.Stop();
-        try
-        {
-            if (IsRecording)
-            {
-                var t = StopRecordingAsync();
-                var sw = Stopwatch.StartNew();
-                while (!t.IsCompleted && sw.ElapsedMilliseconds < 15000)
-                    _ui.Invoke(DispatcherPriority.Background, () => { });
-            }
-        }
-        catch (Exception ex) { Log.Error("Shutdown stop failed", ex); }
+        FinishRecordingBlocking();
         DisposePipeline();
     }
 

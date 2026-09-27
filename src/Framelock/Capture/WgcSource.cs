@@ -99,11 +99,10 @@ public sealed class WgcSource : IDisposable
         }
         if (latest == null) return false;
 
+        SizeInt32 content;
         using (latest)
         {
-            var content = latest.ContentSize;
-            bool resized = content.Width != _poolSize.Width || content.Height != _poolSize.Height;
-
+            content = latest.ContentSize;
             using (var frameTex = WgcInterop.GetTexture(latest.Surface))
             {
                 var desc = frameTex.Description;
@@ -116,12 +115,13 @@ public sealed class WgcSource : IDisposable
                     FramesReceived++;
                 }
             }
-
-            if (resized && content.Width > 0 && content.Height > 0)
-            {
-                _poolSize = content;
-                _pool.Recreate(_d3d.WinRtDevice, _format, BufferCount, _poolSize);
-            }
+        }
+        // Recreate only after the frame is released back to the pool.
+        bool resized = content.Width != _poolSize.Width || content.Height != _poolSize.Height;
+        if (resized && content.Width > 0 && content.Height > 0)
+        {
+            _poolSize = content;
+            _pool.Recreate(_d3d.WinRtDevice, _format, BufferCount, _poolSize);
         }
         return true;
     }

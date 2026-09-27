@@ -56,7 +56,11 @@ public sealed class MainViewModel : ObservableObject
         S.PropertyChanged += OnSettingChanged;
         S.Overlays.CollectionChanged += (_, e) =>
         {
-            if (e.NewItems != null) foreach (OverlayItem o in e.NewItems) o.PropertyChanged += OnOverlayChanged;
+            // Unsubscribe-then-subscribe keeps exactly one handler per item across add/remove/move/replace.
+            if (e.OldItems != null) foreach (OverlayItem o in e.OldItems) o.PropertyChanged -= OnOverlayChanged;
+            if (e.NewItems != null) foreach (OverlayItem o in e.NewItems) { o.PropertyChanged -= OnOverlayChanged; o.PropertyChanged += OnOverlayChanged; }
+            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
+                foreach (var o in S.Overlays) { o.PropertyChanged -= OnOverlayChanged; o.PropertyChanged += OnOverlayChanged; }
             Rec.PushOverlays();
         };
         foreach (var o in S.Overlays) o.PropertyChanged += OnOverlayChanged;
@@ -122,10 +126,12 @@ public sealed class MainViewModel : ObservableObject
         var list = WindowInfo.GetCapturable(true);
         Windows.Clear();
         foreach (var w in list) Windows.Add(w);
-        _selectedWindow = Windows.FirstOrDefault(w => w.Handle.ToInt64() == current)
-                          ?? Windows.FirstOrDefault(w => string.Equals(w.ExeName, S.WindowExe, StringComparison.OrdinalIgnoreCase) && w.Title == S.WindowTitle)
-                          ?? Windows.FirstOrDefault(w => string.Equals(w.ExeName, S.WindowExe, StringComparison.OrdinalIgnoreCase));
-        OnPropertyChanged(nameof(SelectedWindow));
+        var match = Windows.FirstOrDefault(w => w.Handle.ToInt64() == current)
+                    ?? Windows.FirstOrDefault(w => string.Equals(w.ExeName, S.WindowExe, StringComparison.OrdinalIgnoreCase) && w.Title == S.WindowTitle)
+                    ?? Windows.FirstOrDefault(w => string.Equals(w.ExeName, S.WindowExe, StringComparison.OrdinalIgnoreCase));
+        _selectedWindow = null;
+        if (match != null) SelectedWindow = match; // re-matched after a restart: persist the new HWND too
+        else OnPropertyChanged(nameof(SelectedWindow));
     }
 
     private WindowInfo? _selectedWindow;
@@ -410,9 +416,13 @@ public sealed class MainViewModel : ObservableObject
             Directory.CreateDirectory(Paths.OverlayLibrary);
             if (Path.GetFullPath(path).StartsWith(Path.GetFullPath(Paths.OverlayLibrary), StringComparison.OrdinalIgnoreCase)) return path;
             var dest = Path.Combine(Paths.OverlayLibrary, Path.GetFileName(path));
-            if (File.Exists(dest) && new FileInfo(dest).Length != new FileInfo(path).Length)
+            if (File.Exists(dest))
+            {
+                // Same name already in the library: reuse it only if it's the same image, never overwrite.
+                if (File.ReadAllBytes(dest).AsSpan().SequenceEqual(File.ReadAllBytes(path))) return dest;
                 dest = Path.Combine(Paths.OverlayLibrary, $"{Path.GetFileNameWithoutExtension(path)}-{Guid.NewGuid().ToString("N")[..6]}{Path.GetExtension(path)}");
-            File.Copy(path, dest, true);
+            }
+            File.Copy(path, dest, false);
             return dest;
         }
         catch (Exception ex)

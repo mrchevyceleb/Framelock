@@ -53,7 +53,8 @@ public sealed class RegionSelectorWindow : Window
 
         foreach (var d in DisplayInfo.GetAll())
         {
-            Native.RECT? initial = d.DeviceName == lastDisplayId && lastRect.Width > 16 && lastRect.Right <= d.Width && lastRect.Bottom <= d.Height ? lastRect : null;
+            Native.RECT? initial = d.DeviceName == lastDisplayId && lastRect.Left >= 0 && lastRect.Top >= 0
+                                   && lastRect.Width > 16 && lastRect.Height > 16 && lastRect.Right <= d.Width && lastRect.Bottom <= d.Height ? lastRect : null;
             var w = new RegionSelectorWindow(s, d, initial);
             s.Windows.Add(w);
             w.Show();
@@ -385,13 +386,23 @@ public sealed class RegionSelectorWindow : Window
         if (!_moved && mode == Mode.Drawing)
         {
             // A click: snap to the window under the cursor, or the whole monitor.
-            _sel = _hover ?? new Native.RECT(0, 0, _display.Width, _display.Height);
-            if (_session.Aspect.ExactW > 0)
+            var target = _hover ?? new Native.RECT(0, 0, _display.Width, _display.Height);
+            var a = _session.Aspect;
+            if (a.ExactW > 0)
             {
-                var a = _session.Aspect;
-                var c = Px(e);
-                _sel = ClampMove(new Native.RECT((int)(c.X - a.ExactW / 2.0), (int)(c.Y - a.ExactH / 2.0), 0, 0), a.ExactW, a.ExactH);
+                // Exact size, centred on what was clicked.
+                int cx = target.Left + target.Width / 2, cy = target.Top + target.Height / 2;
+                _sel = ClampMove(new Native.RECT(cx - a.ExactW / 2, cy - a.ExactH / 2, 0, 0), a.ExactW, a.ExactH);
             }
+            else if (a.Ratio is double r)
+            {
+                // Aspect locked: the largest rectangle of that shape inside what was clicked, centred.
+                int w = target.Width, h = target.Height;
+                if (w / (double)h > r) w = (int)(h * r); else h = (int)(w / r);
+                w &= ~1; h &= ~1;
+                _sel = ClampMove(new Native.RECT(target.Left + (target.Width - w) / 2, target.Top + (target.Height - h) / 2, 0, 0), w, h);
+            }
+            else _sel = target;
         }
         if (_sel is { } s && (s.Width < 16 || s.Height < 16)) _sel = null;
         Redraw(Px(e));

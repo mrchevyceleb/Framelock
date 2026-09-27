@@ -43,8 +43,19 @@ public sealed class ReplayBuffer : IPacketSink, IDisposable
             _packets.AddLast(packet);
             _bytes += packet.Size;
             if (packet.IsVideo && packet.IsKey) Trim(packet.PtsUs);
+            // Hard bounds that don't depend on keyframes arriving (encoder stalled, very long GOPs, huge bitrates).
+            long oldestAllowed = packet.PtsUs - (Seconds + 10) * 1_000_000L;
+            while (_packets.First is { } first && first != _packets.Last && (first.Value.PtsUs < oldestAllowed || _bytes > MaxBytes))
+            {
+                _packets.RemoveFirst();
+                _bytes -= first.Value.Size;
+                first.Value.Dispose();
+            }
         }
     }
+
+    /// <summary>Memory ceiling: a quarter of the machine's memory, at most 4 GB. Saving starts at the first kept keyframe.</summary>
+    private static readonly long MaxBytes = Math.Min(4L << 30, Math.Max(1L << 30, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 4));
 
     /// <summary>Drops everything before the newest keyframe that still leaves at least <see cref="Seconds"/> buffered.</summary>
     private void Trim(long newestUs)

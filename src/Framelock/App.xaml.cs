@@ -98,8 +98,19 @@ public partial class App : Application
         Shutdown();
     }
 
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        // Logoff / shutdown: finish the file before Windows tears the process down. Only the recording is stopped;
+        // the logoff can still be cancelled (by another app), and then Framelock must keep working.
+        base.OnSessionEnding(e);
+        Recorder?.FinishRecordingBlocking();
+        try { Store?.SaveNow(); } catch { }
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        // Any exit path (not just Quit) must finalize an active recording. Shutdown is idempotent.
+        try { Recorder?.Shutdown(); } catch (Exception ex) { Log.Error("Shutdown on exit failed", ex); }
         _activate?.Dispose();
         try { _mutex?.ReleaseMutex(); } catch { }
         base.OnExit(e);

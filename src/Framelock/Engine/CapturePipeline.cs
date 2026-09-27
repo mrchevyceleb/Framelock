@@ -244,7 +244,9 @@ public sealed class CapturePipeline : IDisposable
                 long behind = Stopwatch.GetTimestamp() - target;
                 if (behind > frameTicks * 2)
                 {
-                    // Fell behind (GPU saturated / system stall): skip the missed slots instead of bursting.
+                    // Fell behind (GPU saturated / system stall): skip the missed slots instead of bursting. Don't fill them with
+                    // repeated frames either - under GPU contention the extra encodes deepen the stall (measured: 119 → 12 fps).
+                    // Timestamps stay exact, so the previous frame just shows longer and A/V sync is unaffected.
                     long skip = behind / frameTicks;
                     n += skip;
                     _lagged += skip;
@@ -348,13 +350,7 @@ public sealed class CapturePipeline : IDisposable
                 }
                 else enc.Encode(_comp.CompositeTexture, n, key);
             }
-            catch (Exception ex)
-            {
-                Log.Error("Video encoder failed", ex);
-                _encoder = null;
-                try { enc.Dispose(); } catch { }
-                EncoderFailed?.Invoke(ex.Message);
-            }
+            catch (Exception ex) { OnEncodeError(enc, ex); }
         }
 
         // ---- preview ----
@@ -367,6 +363,14 @@ public sealed class CapturePipeline : IDisposable
             }
         }
         _statFrames++;
+    }
+
+    private void OnEncodeError(VideoEncoder enc, Exception ex)
+    {
+        Log.Error("Video encoder failed", ex);
+        _encoder = null;
+        try { enc.Dispose(); } catch { }
+        EncoderFailed?.Invoke(ex.Message);
     }
 
     private readonly List<OverlayDraw> _draws = new();

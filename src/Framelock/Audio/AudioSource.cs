@@ -92,8 +92,18 @@ public sealed class AudioSource : IDisposable
                 break;
             }
         }
-        var src = new AudioSource(spec, rec, t0Ticks);
-        rec.StartRecording();
+        AudioSource? src = null;
+        try
+        {
+            src = new AudioSource(spec, rec, t0Ticks);
+            rec.StartRecording();
+        }
+        catch
+        {
+            // Don't leak the COM capture client (retries would pile them up).
+            if (src != null) src.Dispose(); else rec.Dispose();
+            throw;
+        }
         Log.Info($"Audio source started: {spec.Label} [{src.DeviceName}] {rec.WaveFormat}");
         return src;
     }
