@@ -40,6 +40,16 @@ public partial class App : Application
             Shutdown(code);
             return;
         }
+        if (e.Args.FirstOrDefault(a => a.StartsWith("--regionshot=")) is { } rs)
+        {
+            // Dev aid: the region picker's toolbar as a PNG (for a 4K video), without the full-screen picker. Runs beside a live instance.
+            int rc = 0;
+            try { Ui.RegionSelectorWindow.RenderToolbar(rs["--regionshot=".Length..], (3840, 2160)); }
+            catch (Exception ex) { Log.Error("regionshot failed", ex); rc = 1; }
+            Log.Shutdown();
+            Shutdown(rc);
+            return;
+        }
 
         _mutex = new Mutex(true, MutexName, out bool first);
         if (!first)

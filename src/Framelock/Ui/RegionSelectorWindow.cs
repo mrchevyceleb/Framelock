@@ -9,7 +9,8 @@ using Framelock.Core;
 
 namespace Framelock.Ui;
 
-public sealed record RegionResult(string DisplayId, Native.RECT Rect);
+/// <param name="ExactSize">The user picked an exact pixel size (4K, 1080p…): the video should be that size too, 1:1.</param>
+public sealed record RegionResult(string DisplayId, Native.RECT Rect, bool ExactSize);
 
 /// <summary>
 /// Full-screen region picker, one window per monitor over a frozen screenshot.
@@ -37,21 +38,18 @@ public sealed class RegionSelectorWindow : Window
         }
     }
 
-    public static Task<RegionResult?> PickAsync(double? outputAspect, string? lastDisplayId, Native.RECT lastRect)
+    /// <summary>Exact capture sizes YouTube takes as-is (the box is locked to these pixels).</summary>
+    private static readonly (string Label, int W, int H)[] ExactSizes =
     {
-        var s = new Session { TopWindows = WindowInfo.GetCapturable(false) };
-        if (outputAspect is double oa && !IsCommon(oa)) s.Aspects.Add(new AspectChoice($"Output {oa:0.##}:1", oa));
-        s.Aspects.AddRange(new[]
-        {
-            new AspectChoice("Free", null), new AspectChoice("16:9", 16 / 9.0), new AspectChoice("9:16", 9 / 16.0), new AspectChoice("4:3", 4 / 3.0),
-            new AspectChoice("1:1", 1), new AspectChoice("21:9", 21 / 9.0),
-            new AspectChoice("1920×1080", 16 / 9.0, 1920, 1080), new AspectChoice("1280×720", 16 / 9.0, 1280, 720), new AspectChoice("1080×1920", 9 / 16.0, 1080, 1920),
-        });
-        // Default: lock to the output's shape so the video has no bars.
-        s.AspectIndex = outputAspect is double o ? Math.Max(0, s.Aspects.FindIndex(a => a.Ratio is double r && Math.Abs(r - o) < 0.01 && a.ExactW == 0)) : 1;
-        if (outputAspect == null) s.AspectIndex = s.Aspects.FindIndex(a => a.Ratio == null);
+        ("4K", 3840, 2160), ("1440p", 2560, 1440), ("1080p", 1920, 1080), ("720p", 1280, 720), ("Shorts", 1080, 1920),
+    };
 
-        foreach (var d in DisplayInfo.GetAll())
+    /// <param name="output">The video size, or null when it follows the source.</param>
+    public static Task<RegionResult?> PickAsync((int W, int H)? output, string? lastDisplayId, Native.RECT lastRect)
+    {
+        var displays = DisplayInfo.GetAll();
+        var s = BuildSession(output, displays);
+        foreach (var d in displays)
         {
             Native.RECT? initial = d.DeviceName == lastDisplayId && lastRect.Left >= 0 && lastRect.Top >= 0
                                    && lastRect.Width > 16 && lastRect.Height > 16 && lastRect.Right <= d.Width && lastRect.Bottom <= d.Height ? lastRect : null;
@@ -61,8 +59,62 @@ public sealed class RegionSelectorWindow : Window
         }
         // Keyboard focus goes to the monitor under the cursor.
         Native.GetCursorPos(out var cp);
-        (s.Windows.FirstOrDefault(w => w.Contains(cp)) ?? s.Windows.FirstOrDefault())?.Activate();
+        var active = s.Windows.FirstOrDefault(w => w.Contains(cp)) ?? s.Windows.FirstOrDefault();
+        // An exact size with nothing to restore starts as a centred box, ready to drag into place.
+        if (s.Aspect.ExactW > 0 && s.Windows.All(w => w._sel == null))
+        {
+            var host = active != null && active.Fits(s.Aspect) ? active : s.Windows.FirstOrDefault(w => w.Fits(s.Aspect));
+            if (host != null) { host._sel = host.ExactAt(host._display.Width / 2.0, host._display.Height / 2.0, s.Aspect); host.Redraw(); active = host; }
+        }
+        active?.Activate();
         return s.Tcs.Task;
+    }
+
+    private static Session BuildSession((int W, int H)? output, IReadOnlyList<DisplayInfo> displays)
+    {
+        var s = new Session { TopWindows = WindowInfo.GetCapturable(false) };
+        double? outputAspect = output is { } o ? (double)o.W / o.H : null;
+        if (outputAspect is double oa && !IsCommon(oa)) s.Aspects.Add(new AspectChoice($"Output {oa:0.##}:1", oa));
+        s.Aspects.AddRange(new[]
+        {
+            new AspectChoice("Free", null), new AspectChoice("16:9", 16 / 9.0), new AspectChoice("9:16", 9 / 16.0), new AspectChoice("4:3", 4 / 3.0),
+            new AspectChoice("1:1", 1), new AspectChoice("21:9", 21 / 9.0),
+        });
+        foreach (var (label, w, h) in ExactSizes) s.Aspects.Add(new AspectChoice($"{label} · {w}×{h}", (double)w / h, w, h));
+        if (output is { } c && c.W >= 16 && c.H >= 16 && c.W % 2 == 0 && c.H % 2 == 0 && !s.Aspects.Any(a => a.ExactW == c.W && a.ExactH == c.H))
+            s.Aspects.Add(new AspectChoice($"Video · {c.W}×{c.H}", (double)c.W / c.H, c.W, c.H));
+
+        // Default: the video's exact size when a monitor can hold it (1:1, no scaling); otherwise lock to its shape so there are no bars.
+        int exact = output is { } e ? s.Aspects.FindIndex(a => a.ExactW == e.W && a.ExactH == e.H && displays.Any(d => a.ExactW <= d.Width && a.ExactH <= d.Height)) : -1;
+        if (exact >= 0) s.AspectIndex = exact;
+        else if (outputAspect is double r0) s.AspectIndex = Math.Max(0, s.Aspects.FindIndex(a => a.Ratio is double r && Math.Abs(r - r0) < 0.01 && a.ExactW == 0));
+        else s.AspectIndex = s.Aspects.FindIndex(a => a.Ratio == null);
+        return s;
+    }
+
+    /// <summary>Dev aid for <c>--uishot</c>: renders the picker's toolbar to a PNG without showing the full-screen picker.</summary>
+    internal static void RenderToolbar(string file, (int W, int H)? output)
+    {
+        var displays = DisplayInfo.GetAll();
+        var w = new RegionSelectorWindow(BuildSession(output, displays), displays[0], null);
+        var tb = w._toolbar;
+        w._canvas.Children.Remove(tb);
+        w.Close();
+        // Laid out in a small window far off-screen (layout doesn't run on a never-shown tree).
+        var host = new Window
+        {
+            WindowStyle = WindowStyle.None, ShowInTaskbar = false, ShowActivated = false, ResizeMode = ResizeMode.NoResize,
+            Left = -20000, Top = -20000, SizeToContent = SizeToContent.WidthAndHeight, Background = Brushes.Black, Content = tb,
+        };
+        host.Show();
+        host.UpdateLayout();
+        var bmp = new RenderTargetBitmap((int)Math.Ceiling(tb.ActualWidth), (int)Math.Ceiling(tb.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        bmp.Render(tb);
+        host.Close();
+        var enc = new PngBitmapEncoder();
+        enc.Frames.Add(BitmapFrame.Create(bmp));
+        using var fs = System.IO.File.Create(file);
+        enc.Save(fs);
     }
 
     private static bool IsCommon(double r) => new[] { 16 / 9.0, 9 / 16.0, 4 / 3.0, 1, 21 / 9.0 }.Any(c => Math.Abs(c - r) < 0.01);
@@ -81,7 +133,7 @@ public sealed class RegionSelectorWindow : Window
     private readonly TextBlock _sizeText;
     private readonly Rectangle[] _handles = new Rectangle[4];
     private readonly Border _toolbar;
-    private readonly StackPanel _aspectRow;
+    private readonly StackPanel _shapeRow, _exactRow;
     private double _scale = 1;
 
     private Native.RECT? _sel;           // monitor-relative physical pixels
@@ -97,6 +149,11 @@ public sealed class RegionSelectorWindow : Window
         _session = session;
         _display = display;
         _sel = initial;
+        // An exact size stays exact: a restored selection of another size becomes that size, same centre. On a monitor
+        // too small for it the old selection is dropped, so the box starts on a monitor that can hold it.
+        var a0 = session.Aspect;
+        if (initial is { } r0 && a0.ExactW > 0 && (r0.Width != a0.ExactW || r0.Height != a0.ExactH))
+            _sel = Fits(a0) ? ExactAt(r0.Left + r0.Width / 2.0, r0.Top + r0.Height / 2.0, a0) : null;
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
@@ -133,15 +190,23 @@ public sealed class RegionSelectorWindow : Window
         actionsRow.Children.Add(cancel);
         _actions = new Border { Background = new SolidColorBrush(Color.FromArgb(0xE8, 0x16, 0x18, 0x1D)), CornerRadius = new CornerRadius(8), Padding = new Thickness(6), Child = actionsRow, Visibility = Visibility.Collapsed, Cursor = Cursors.Arrow };
 
-        _aspectRow = new StackPanel { Orientation = Orientation.Horizontal };
+        _shapeRow = new StackPanel { Orientation = Orientation.Horizontal };
+        _exactRow = new StackPanel { Orientation = Orientation.Horizontal };
         BuildAspectButtons();
         var hint = new TextBlock
         {
-            Text = "Drag to select · click a window to snap to it · Enter to confirm · Esc to cancel",
-            Foreground = Placement.Res("TextDimBrush"), FontSize = 12, Margin = new Thickness(4, 6, 4, 0), HorizontalAlignment = HorizontalAlignment.Center,
+            Text = "Drag to select · click a window to snap to it · drag the box to move it · Enter to confirm · Esc to cancel",
+            Foreground = Placement.Res("TextDimBrush"), FontSize = 12, Margin = new Thickness(4, 8, 4, 0), HorizontalAlignment = HorizontalAlignment.Center,
         };
+        var rows = new Grid { HorizontalAlignment = HorizontalAlignment.Center };
+        rows.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        rows.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        rows.RowDefinitions.Add(new RowDefinition());
+        rows.RowDefinitions.Add(new RowDefinition());
+        AddToolbarRow(rows, 0, "Shape", _shapeRow);
+        AddToolbarRow(rows, 1, "Exact pixels", _exactRow);
         var tbStack = new StackPanel();
-        tbStack.Children.Add(new Border { Background = Placement.Res("Bg2Brush"), CornerRadius = new CornerRadius(8), Padding = new Thickness(3), Child = _aspectRow, HorizontalAlignment = HorizontalAlignment.Center });
+        tbStack.Children.Add(rows);
         tbStack.Children.Add(hint);
         _toolbar = new Border
         {
@@ -209,24 +274,57 @@ public sealed class RegionSelectorWindow : Window
         }
     }
 
+    private static void AddToolbarRow(Grid grid, int row, string label, StackPanel buttons)
+    {
+        var text = new TextBlock
+        {
+            Text = label, Foreground = Placement.Res("TextDimBrush"), FontSize = 12, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 10, 0), HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        var seg = new Border
+        {
+            Background = Placement.Res("Bg2Brush"), CornerRadius = new CornerRadius(8), Padding = new Thickness(3), Child = buttons,
+            HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, row == 0 ? 0 : 6, 0, 0),
+        };
+        Grid.SetRow(text, row);
+        Grid.SetRow(seg, row);
+        Grid.SetColumn(seg, 1);
+        grid.Children.Add(text);
+        grid.Children.Add(seg);
+    }
+
     private void BuildAspectButtons()
     {
-        _aspectRow.Children.Clear();
+        _shapeRow.Children.Clear();
+        _exactRow.Children.Clear();
         for (int i = 0; i < _session.Aspects.Count; i++)
         {
             var a = _session.Aspects[i];
-            bool fits = a.ExactW == 0 || (a.ExactW <= _display.Width && a.ExactH <= _display.Height);
+            bool fits = Fits(a);
             var rb = new RadioButton
             {
                 Style = (Style)Application.Current.FindResource("SegmentedRadio"), Content = a.Label, IsChecked = i == _session.AspectIndex,
+                GroupName = "aspect", // one choice across both rows
                 Padding = new Thickness(10, 5, 10, 5), IsEnabled = fits, Cursor = Cursors.Hand,
-                ToolTip = a.ExactW > 0 ? $"Exactly {a.ExactW}×{a.ExactH} pixels (1:1, no scaling)" : a.Ratio == null ? "Any shape" : $"Lock to {a.Label}",
+                ToolTip = a.ExactW == 0 ? (a.Ratio == null ? "Any shape" : $"Lock to {a.Label}")
+                        : fits ? $"Exactly {a.ExactW}×{a.ExactH} pixels. The video is set to the same size, so nothing is scaled."
+                        : $"{a.ExactW}×{a.ExactH} is bigger than this monitor ({_display.Width}×{_display.Height})",
             };
+            ToolTipService.SetShowOnDisabled(rb, true);
             int idx = i;
             rb.Checked += (_, _) => SetAspect(idx);
-            _aspectRow.Children.Add(rb);
+            (a.ExactW > 0 ? _exactRow : _shapeRow).Children.Add(rb);
         }
     }
+
+    private bool Fits(AspectChoice a) => a.ExactW == 0 || (a.ExactW <= _display.Width && a.ExactH <= _display.Height);
+
+    /// <summary>The chosen exact size fits this monitor. On a smaller monitor it only locks the shape (and isn't exact).</summary>
+    private bool ExactHere => _session.Aspect.ExactW > 0 && Fits(_session.Aspect);
+
+    /// <summary>An exact-size box centred on (cx, cy), kept on this monitor.</summary>
+    private Native.RECT ExactAt(double cx, double cy, AspectChoice a) =>
+        ClampMove(new Native.RECT((int)(cx - a.ExactW / 2.0), (int)(cy - a.ExactH / 2.0), 0, 0), a.ExactW, a.ExactH);
 
     private void SetAspect(int idx)
     {
@@ -234,11 +332,11 @@ public sealed class RegionSelectorWindow : Window
         _session.AspectIndex = idx;
         foreach (var w in _session.Windows) { if (w != this) w.BuildAspectButtons(); }
         var a = _session.Aspect;
-        if (a.ExactW > 0)
+        if (ExactHere)
         {
             // Exact pixel size: centre on the current selection (or the monitor).
             var c = _sel is { } s ? new Point(s.Left + s.Width / 2.0, s.Top + s.Height / 2.0) : new Point(_display.Width / 2.0, _display.Height / 2.0);
-            _sel = ClampMove(new Native.RECT((int)(c.X - a.ExactW / 2.0), (int)(c.Y - a.ExactH / 2.0), 0, 0), a.ExactW, a.ExactH);
+            _sel = ExactAt(c.X, c.Y, a);
         }
         else if (a.Ratio is double r && _sel is { } s)
         {
@@ -303,7 +401,7 @@ public sealed class RegionSelectorWindow : Window
         _startPx = p;
         _moved = false;
         int corner = CornerAt(p);
-        if (corner >= 0 && _session.Aspect.ExactW == 0)
+        if (corner >= 0 && !ExactHere)
         {
             _mode = Mode.Resizing;
             _corner = corner;
@@ -332,7 +430,7 @@ public sealed class RegionSelectorWindow : Window
         {
             UpdateHover(p);
             Cursor = OverUi(e) ? Cursors.Arrow
-                : CornerAt(p) is int c and >= 0 && _session.Aspect.ExactW == 0 ? (c is 0 or 2 ? Cursors.SizeNWSE : Cursors.SizeNESW)
+                : CornerAt(p) is int c and >= 0 && !ExactHere ? (c is 0 or 2 ? Cursors.SizeNWSE : Cursors.SizeNESW)
                 : _sel is { } s && Inside(s, p) ? Cursors.SizeAll : Cursors.Cross;
             Redraw(p);
             return;
@@ -348,12 +446,9 @@ public sealed class RegionSelectorWindow : Window
                 _sel = ClampMove(new Native.RECT(s.Left + dx, s.Top + dy, 0, 0), s.Width, s.Height);
                 break;
             }
-            case Mode.Drawing when _session.Aspect.ExactW > 0:
-            {
-                var a = _session.Aspect;
-                _sel = ClampMove(new Native.RECT((int)(p.X - a.ExactW / 2.0), (int)(p.Y - a.ExactH / 2.0), 0, 0), a.ExactW, a.ExactH);
+            case Mode.Drawing when ExactHere:
+                _sel = ExactAt(p.X, p.Y, _session.Aspect);
                 break;
-            }
             default:
                 _sel = RectFrom(_anchorPx, p);
                 break;
@@ -388,11 +483,10 @@ public sealed class RegionSelectorWindow : Window
             // A click: snap to the window under the cursor, or the whole monitor.
             var target = _hover ?? new Native.RECT(0, 0, _display.Width, _display.Height);
             var a = _session.Aspect;
-            if (a.ExactW > 0)
+            if (ExactHere)
             {
                 // Exact size, centred on what was clicked.
-                int cx = target.Left + target.Width / 2, cy = target.Top + target.Height / 2;
-                _sel = ClampMove(new Native.RECT(cx - a.ExactW / 2, cy - a.ExactH / 2, 0, 0), a.ExactW, a.ExactH);
+                _sel = ExactAt(target.Left + target.Width / 2.0, target.Top + target.Height / 2.0, a);
             }
             else if (a.Ratio is double r)
             {
@@ -459,7 +553,8 @@ public sealed class RegionSelectorWindow : Window
         }
         // Even sizes keep every encoder happy.
         int w = s.Width & ~1, h = s.Height & ~1;
-        _session.Finish(new RegionResult(_display.DeviceName, new Native.RECT(s.Left, s.Top, s.Left + w, s.Top + h)));
+        var a = _session.Aspect;
+        _session.Finish(new RegionResult(_display.DeviceName, new Native.RECT(s.Left, s.Top, s.Left + w, s.Top + h), a.ExactW == w && a.ExactH == h));
     }
 
     // ------------------------------------------------------------------ drawing (DIPs = px / scale)
@@ -484,7 +579,7 @@ public sealed class RegionSelectorWindow : Window
             Place(_selRect, rect.X - 1, rect.Y - 1, rect.Width + 2, rect.Height + 2);
             _selRect.Visibility = Visibility.Visible;
             _hoverRect.Visibility = Visibility.Collapsed;
-            bool resizable = _session.Aspect.ExactW == 0;
+            bool resizable = !ExactHere;
             Point[] c = { rect.TopLeft, rect.TopRight, rect.BottomRight, rect.BottomLeft };
             for (int i = 0; i < 4; i++)
             {
@@ -492,7 +587,9 @@ public sealed class RegionSelectorWindow : Window
                 Canvas.SetLeft(_handles[i], c[i].X - 5);
                 Canvas.SetTop(_handles[i], c[i].Y - 5);
             }
-            _sizeText.Text = $"{s.Width} × {s.Height}   at {s.Left}, {s.Top}";
+            var ea = _session.Aspect;
+            string exact = ea.ExactW == s.Width && ea.ExactH == s.Height ? "  ✓ exact" : "";
+            _sizeText.Text = $"{s.Width} × {s.Height}{exact}   at {s.Left}, {s.Top}";
             _sizeTag.Visibility = Visibility.Visible;
             _sizeTag.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
             double ty = rect.Y - _sizeTag.DesiredSize.Height - 6;

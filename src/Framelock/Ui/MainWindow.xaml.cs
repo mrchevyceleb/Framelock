@@ -565,8 +565,8 @@ public partial class MainWindow : Window
         try
         {
             await Task.Delay(180); // let the window vanish before the selector appears
-            double? aspect = _s.UseSourceResolution ? null : (double)_s.OutputWidth / _s.OutputHeight;
-            var result = await RegionSelectorWindow.PickAsync(aspect, _s.RegionDisplayId, new Native.RECT(_s.RegionX, _s.RegionY, _s.RegionX + _s.RegionWidth, _s.RegionY + _s.RegionHeight));
+            (int, int)? output = _s.UseSourceResolution ? null : (_s.OutputWidth, _s.OutputHeight);
+            var result = await RegionSelectorWindow.PickAsync(output, _s.RegionDisplayId, new Native.RECT(_s.RegionX, _s.RegionY, _s.RegionX + _s.RegionWidth, _s.RegionY + _s.RegionHeight));
             if (result is { } r)
             {
                 _s.RegionDisplayId = r.DisplayId;
@@ -575,6 +575,13 @@ public partial class MainWindow : Window
                 _s.RegionWidth = r.Rect.Width;
                 _s.RegionHeight = r.Rect.Height;
                 _s.SourceKind = SourceKind.Region;
+                if (r.ExactSize)
+                {
+                    // An exact-pixel box records 1:1: the video is exactly that size, nothing scaled.
+                    _s.UseSourceResolution = false;
+                    _s.OutputWidth = r.Rect.Width;
+                    _s.OutputHeight = r.Rect.Height;
+                }
             }
         }
         finally

@@ -53,7 +53,8 @@ public static class SelfTest
             if (Opt("source", "display") == "region")
             {
                 s.SourceKind = SourceKind.Region;
-                s.RegionX = 100; s.RegionY = 100; s.RegionWidth = 1280; s.RegionHeight = 720;
+                s.RegionX = int.Parse(Opt("rx", "100")); s.RegionY = int.Parse(Opt("ry", "100"));
+                s.RegionWidth = int.Parse(Opt("rw", "1280")); s.RegionHeight = int.Parse(Opt("rh", "720"));
             }
             s.Overlays.Add(new OverlayItem { Kind = OverlayKind.Text, Text = "@framelock", Anchor = OverlayAnchor.BottomRight, Width = 0.2 });
             foreach (var o in s.Overlays) Graphics.OverlayRenderer.Refresh(o);
