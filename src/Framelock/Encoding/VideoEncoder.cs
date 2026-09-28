@@ -196,6 +196,9 @@ public sealed unsafe class VideoEncoder : IDisposable
                 if (Info.Codec != VideoCodec.H264) _ctx->max_b_frames = 0; // HEVC/AV1 B-frames only on newest AMD GPUs
                 if (s.Speed >= SpeedPreset.Quality) Opt("preanalysis", "1");
                 Opt("enforce_hrd", "0");
+                // Cuts need forced keyframes to be IDR: AMF only flags IDRs as key, so a plain forced I-frame is ignored and
+                // start/stop snap to the next natural GOP boundary (up to KeyframeSeconds late).
+                Opt("forced_idr", "1");
                 switch (s.RateControl)
                 {
                     case RateControlMode.ConstantQuality:
@@ -222,6 +225,7 @@ public sealed unsafe class VideoEncoder : IDisposable
             case EncoderFamily.Qsv:
             {
                 Opt("preset", s.Speed switch { SpeedPreset.Performance => "veryfast", SpeedPreset.Balanced => "medium", SpeedPreset.Quality => "slow", _ => "veryslow" });
+                Opt("forced_idr", "1"); // same as AMF: only IDRs are flagged key
                 if (s.RateControl == RateControlMode.ConstantQuality) _ctx->global_quality = q;
                 else { _ctx->bit_rate = bitrate; _ctx->rc_max_rate = s.RateControl == RateControlMode.Cbr ? bitrate : bitrate * 3 / 2; }
                 break;
