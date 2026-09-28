@@ -64,10 +64,31 @@ public sealed class D3DContext : IDisposable
         return d;
     }
 
+    private static int s_gpuClass;
+
     private static void TryRaiseGpuPriority(D3DContext d)
     {
-        // Keeps capture/encode responsive when a game saturates the GPU. Needs admin for the process class; harmless otherwise.
-        try { Native.D3DKMTSetProcessSchedulingPriorityClass(Native.GetCurrentProcess(), Native.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH); } catch { }
+        // Keeps capture/encode on time when a game holds the GPU at 100%. The game's frames then take the GPU until they
+        // finish and ours wait behind them: measured 60 → 40 fps at HIGH, a steady 60 at REALTIME, which costs the game
+        // about 2% (Framelock's GPU work is ~1 ms a frame). Once per process; REALTIME isn't allowed everywhere.
+        if (s_gpuClass == 0)
+        {
+            var self = Native.GetCurrentProcess();
+            int st = -1;
+            try { st = Native.D3DKMTSetProcessSchedulingPriorityClass(self, Native.D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME); } catch { }
+            if (st == 0) s_gpuClass = Native.D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME;
+            else
+            {
+                try { if (Native.D3DKMTSetProcessSchedulingPriorityClass(self, Native.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH) == 0) s_gpuClass = Native.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH; } catch { }
+            }
+            Log.Info("GPU scheduling priority: " + (s_gpuClass switch
+            {
+                Native.D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME => "realtime",
+                Native.D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH => $"high (realtime refused: 0x{st:X8})",
+                _ => $"normal (raising it failed: 0x{st:X8})",
+            }));
+            if (s_gpuClass == 0) s_gpuClass = -1;
+        }
         try
         {
             using var dxgi = d.Device.QueryInterface<IDXGIDevice>();

@@ -403,8 +403,11 @@ public sealed class RecorderController : ObservableObject, IDisposable
 
             _splitIndex = 0;
             _finalPath = BuildPath(Settings.FileNameTemplate, ContainerExt(Settings.Container));
-            long t = p.RequestKeyframe();
+            // The sink listens before the keyframe is asked for: a slow file open must not miss it (and then wait for the
+            // next scheduled keyframe, which cut up to 2 s from the start).
+            long t = p.NowUs;
             _sink = CreateSink(p, _finalPath, t);
+            p.RequestKeyframe();
             _recStartUs = t;
             _pausedUs = 0;
             _nextSplitUs = Settings.SplitEveryMinutes > 0 ? t + Settings.SplitEveryMinutes * 60_000_000L : long.MaxValue;
@@ -547,6 +550,9 @@ public sealed class RecorderController : ObservableObject, IDisposable
         if (!IsRecording || _sink == null || _pipeline == null) return;
         var p = _pipeline;
         var sink = _sink;
+        if (Stats is { } st)
+            Log.Info($"Recording stats: out {st.OutputFps:F1} fps, capture {st.CaptureFps:F1} fps, skipped {st.Lagged} frame slots (GPU busy, since pipeline start), " +
+                     $"encoder dropped {st.EncoderDropped}, work {st.WorkMsAvg:F2}/{st.WorkMsMax:F1} ms");
         if (abort) sink.Abort();
         else sink.Stop(p.RequestKeyframe());
         _sink = null;
@@ -583,11 +589,12 @@ public sealed class RecorderController : ObservableObject, IDisposable
         var old = _sink;
         if (p == null || old == null || State != RecorderState.Recording) return;
         _splitIndex++;
-        long t = p.RequestKeyframe();
+        long t = p.NowUs;
         var basePath = _finalPath!;
         var partPath = Path.Combine(Path.GetDirectoryName(basePath)!, $"{Path.GetFileNameWithoutExtension(basePath)} (part {_splitIndex + 1}){Path.GetExtension(basePath)}");
         _sink = CreateSink(p, partPath, t);
         old.Stop(t);
+        p.RequestKeyframe(); // after both sinks know the cut, so neither can miss the keyframe
         _nextSplitUs = t + Settings.SplitEveryMinutes * 60_000_000L;
         Log.Info($"Split recording → {partPath}");
     }
@@ -777,7 +784,7 @@ public sealed class RecorderController : ObservableObject, IDisposable
             .Replace("{fps}", p != null ? $"{p.Config.Fps}fps" : "");
         var sb = new StringBuilder();
         foreach (var c in name) sb.Append(Path.GetInvalidFileNameChars().Contains(c) ? '_' : c);
-        name = sb.ToString().Trim().TrimEnd('.');
+        name = System.Text.RegularExpressions.Regex.Replace(sb.ToString(), @"\s+", " ").Trim().TrimEnd('.');
         if (name.Length > 150) name = name[..150];
         if (string.IsNullOrWhiteSpace(name)) name = "Recording " + now.ToString("yyyy-MM-dd HH-mm-ss");
         var folder = Settings.OutputFolder;

@@ -51,6 +51,27 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.FirstOrDefault(a => a.StartsWith("--remixcheck=")) is { } rm)
+        {
+            // Dev aid: headless Fix audio check on a copy of a recording. Runs beside a live instance.
+            int rc = SelfTest.RemixCheck(rm["--remixcheck=".Length..]);
+            Log.Shutdown();
+            Shutdown(rc);
+            return;
+        }
+
+        if (e.Args.FirstOrDefault(a => a.StartsWith("--gpuload=")) is { } gl)
+        {
+            // Dev aid: saturate the GPU like a demanding game (off-screen) while a selftest records.
+            var parts = gl["--gpuload=".Length..].Split(',');
+            int rc = 1;
+            try { rc = GpuLoad.Run(double.Parse(parts[0]), parts.Length > 1 ? int.Parse(parts[1]) : 2400, parts.Length > 2 ? int.Parse(parts[2]) : 64); }
+            catch (Exception ex) { Log.Error("gpuload failed", ex); }
+            Log.Shutdown();
+            Shutdown(rc);
+            return;
+        }
+
         _mutex = new Mutex(true, MutexName, out bool first);
         if (!first)
         {
@@ -121,6 +142,7 @@ public partial class App : Application
     {
         // Any exit path (not just Quit) must finalize an active recording. Shutdown is idempotent.
         try { Recorder?.Shutdown(); } catch (Exception ex) { Log.Error("Shutdown on exit failed", ex); }
+        Ui.RemixWindow.CancelAllExports();
         _activate?.Dispose();
         try { _mutex?.ReleaseMutex(); } catch { }
         base.OnExit(e);

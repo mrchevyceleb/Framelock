@@ -59,6 +59,14 @@ public static class SelfTest
             s.Overlays.Add(new OverlayItem { Kind = OverlayKind.Text, Text = "@framelock", Anchor = OverlayAnchor.BottomRight, Width = 0.2 });
             foreach (var o in s.Overlays) Graphics.OverlayRenderer.Refresh(o);
 
+            Process? load = null;
+            if (Opt("gpuload", "") is { Length: > 0 } iters)
+            {
+                // A separate process keeps the GPU busy like a game (GPU priority is per process).
+                load = Process.Start(Environment.ProcessPath!, $"--gpuload={int.Parse(Opt("seconds", "6")) + 8},{iters},{Opt("strips", "64")}");
+                await Task.Delay(2000);
+                Say($"GPU load running ({iters} iters)");
+            }
             var rc = new RecorderController(new SettingsStore(s), Application.Current.Dispatcher);
             var saved = new List<string>();
             rc.Notify += n =>
@@ -75,7 +83,7 @@ public static class SelfTest
             if (!rc.IsRecording) throw new Exception("Recording did not start: " + rc.StatusText);
             Say($"Recording: {rc.OutputInfo} (start took {sw.ElapsedMilliseconds} ms)");
             // Put some motion on screen: a topmost window that changes colour every frame.
-            var flicker = ShowMotionWindow();
+            var flicker = Opt("motion", "1") == "1" ? ShowMotionWindow() : null;
 
             bool pause = Opt("pause", "0") == "1";
             double expected = seconds;
@@ -96,7 +104,8 @@ public static class SelfTest
             Say($"Audio: desktop={rc.Pipeline?.Audio.DesktopStatus} mic={rc.Pipeline?.Audio.MicStatus}");
             if (s.ReplayEnabled) await rc.SaveReplayAsync();
             await rc.StopRecordingAsync();
-            flicker.Close();
+            flicker?.Close();
+            try { load?.Kill(); } catch { }
             rc.Shutdown();
 
             if (saved.Count == 0) throw new Exception("No file was saved");
@@ -114,6 +123,145 @@ public static class SelfTest
         Say(ok == 0 ? "SELFTEST PASSED" : "SELFTEST FAILED");
         File.WriteAllText(Path.Combine(Paths.Logs, "selftest.txt"), report.ToString());
         return ok;
+    }
+
+    /// <summary>
+    /// Headless check of Fix audio on a copy of <paramref name="file"/>: probe, remix (game 50%, mic 200%), verify the
+    /// new mix against the separate tracks, exercise the preview player (no sound), grab a thumbnail and render the
+    /// window to a PNG. Report: logs/remixcheck.txt.
+    /// </summary>
+    public static int RemixCheck(string file)
+    {
+        var report = new StringBuilder();
+        void Say(string s) { report.AppendLine(s); Log.Info("[remixcheck] " + s); }
+        int rc = 0;
+        var dir = Path.Combine(Path.GetTempPath(), "framelock-remixcheck");
+        try
+        {
+            FFmpegSetup.Init();
+            Directory.CreateDirectory(dir);
+            foreach (var f in Directory.GetFiles(dir)) try { File.Delete(f); } catch { }
+            var copy = Path.Combine(dir, "source" + Path.GetExtension(file));
+            File.Copy(file, copy);
+            var sw = Stopwatch.StartNew();
+            var info = MediaFile.Probe(copy);
+            Say($"probe: {info.DurationSeconds:F2}s {info.Width}x{info.Height} {info.Fps:F2}fps {info.VideoCodec}; audio: " +
+                string.Join(", ", info.Audio.Select(a => $"#{a.StreamIndex} [{a.Name}] {a.Role} {a.BitrateKbps}k")) + $" ({sw.ElapsedMilliseconds} ms)");
+
+            var levels = new RemixLevels(0.5f, 2f);
+            sw.Restart();
+            var result = AudioRemixer.ExportToFile(copy, info, levels, replaceOriginal: false);
+            Say($"export: {Path.GetFileName(result)} in {sw.ElapsedMilliseconds} ms ({new FileInfo(result).Length / 1024} KB vs {new FileInfo(copy).Length / 1024} KB)");
+            if (Directory.GetFiles(dir, "*.part").Length > 0) { Say("FAIL: temp file left behind"); rc = 1; }
+            var s = new AppSettings { Fps = (int)Math.Round(info.Fps), OutputWidth = info.Width, OutputHeight = info.Height, MicEnabled = true, DesktopAudioEnabled = true };
+            ProbeFile(result, s, 0, Say); // details only: the source's own quirks (e.g. skipped frames) carry over
+            var outInfo = MediaFile.Probe(result);
+            if (Math.Abs(outInfo.DurationSeconds - info.DurationSeconds) > 0.05 || Math.Abs(outInfo.Fps - info.Fps) > 0.01)
+            { Say($"FAIL: remix {outInfo.DurationSeconds:F3}s {outInfo.Fps:F2}fps vs source {info.DurationSeconds:F3}s {info.Fps:F2}fps"); rc = 1; }
+            Say("remix tracks: " + string.Join(", ", outInfo.Audio.Select(a => $"#{a.StreamIndex} [{a.Name}] {a.Role}")));
+            if (outInfo.Audio.Count != info.Audio.Count) { Say("FAIL: audio track count changed"); rc = 1; }
+
+            if (info.HasSeparateTracks)
+            {
+                // The new mix must match SoftClip(0.5 game + 2 mic) built from the (unchanged) separate tracks.
+                var (d0, d) = DecodeAll(result, outInfo.Desktop!.StreamIndex);
+                var (m0, m) = DecodeAll(result, outInfo.Mic!.StreamIndex);
+                var (x0, mix) = DecodeAll(result, outInfo.Mix!.StreamIndex);
+                var (o0, old) = DecodeAll(copy, info.Mix!.StreamIndex);
+                Say($"starts (samples): game {d0} mic {m0} new mix {x0} old mix {o0}");
+                // Compare sample-for-sample on the shared timeline.
+                long from = Math.Max(Math.Max(d0, m0), x0), to = Math.Min(Math.Min(d0 + d.Length / 2, m0 + m.Length / 2), x0 + mix.Length / 2);
+                double eErr = 0, eRef = 0, eOld = 0;
+                for (long t = from; t < to; t++)
+                    for (int c = 0; c < 2; c++)
+                    {
+                        double want = Audio.AudioEngine.SoftClip(d[(t - d0) * 2 + c] * levels.Desktop + m[(t - m0) * 2 + c] * levels.Mic);
+                        double got = mix[(t - x0) * 2 + c];
+                        eErr += (got - want) * (got - want);
+                        eRef += want * want;
+                        long oi = (t - o0) * 2 + c;
+                        if (oi >= 0 && oi < old.Length) eOld += (old[oi] - want) * (old[oi] - want);
+                    }
+                int n = (int)Math.Max(0, (to - from) * 2);
+                double rel = eRef > 0 ? Math.Sqrt(eErr / eRef) : 0, relOld = eRef > 0 ? Math.Sqrt(eOld / eRef) : 0;
+                Say($"mix check: {n / 2 / 48000.0:F2}s, rms game {Rms(d):F4} mic {Rms(m):F4} new mix {Rms(mix):F4} old mix {Rms(old):F4}; " +
+                    $"error vs expected {rel:P1} (old mix {relOld:P1}); lengths d={d.Length / 2} m={m.Length / 2} mix={mix.Length / 2}");
+                if (eRef > 1e-6 && rel > 0.25) { Say("FAIL: new mix doesn't match the expected levels"); rc = 1; }
+                if (Math.Abs(mix.Length - d.Length) > 2 * 2048) { Say("FAIL: mix length differs from the tracks"); rc = 1; }
+            }
+
+            // Preview player: read, seek, read to the end.
+            using (var pv = new Audio.RemixPreview(copy, info))
+            {
+                pv.SetGain(0, 0.5f);
+                pv.SetGain(1, 2f);
+                var buf = new float[4800];
+                int got = pv.Read(buf);
+                pv.Seek(info.DurationSeconds / 2);
+                got += pv.Read(buf);
+                double mid = pv.Position;
+                long total = 0;
+                sw.Restart();
+                int r;
+                while ((r = pv.Read(buf)) > 0) total += r;
+                Say($"preview: first reads {got} samples, after seek at {mid:F2}s, read {total / 2 / 48000.0:F2}s more to the end in {sw.ElapsedMilliseconds} ms, AtEnd={pv.AtEnd}");
+                if (Math.Abs(mid - (info.DurationSeconds / 2 + 0.05)) > 0.2 || !pv.AtEnd) { Say("FAIL: preview seek/end"); rc = 1; }
+            }
+
+            sw.Restart();
+            var thumb = Thumbnailer.Grab(copy, 320, 180, Math.Min(info.DurationSeconds * 0.1, 10));
+            Say(thumb == null ? "FAIL: no thumbnail" : $"thumbnail {thumb.Width}x{thumb.Height} in {sw.ElapsedMilliseconds} ms");
+            if (thumb == null) rc = 1;
+            else
+            {
+                var bmp = System.Windows.Media.Imaging.BitmapSource.Create(thumb.Width, thumb.Height, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, thumb.Bgra, thumb.Width * 4);
+                var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+                using var fs = File.Create(Path.Combine(dir, "thumb.png"));
+                enc.Save(fs);
+            }
+            Ui.RemixWindow.RenderShot(copy, Path.Combine(dir, "window.png"));
+            Say("window: " + Path.Combine(dir, "window.png"));
+        }
+        catch (Exception ex)
+        {
+            Say("FAILED: " + ex);
+            rc = 1;
+        }
+        Say(rc == 0 ? "REMIXCHECK PASSED" : "REMIXCHECK FAILED");
+        File.WriteAllText(Path.Combine(Paths.Logs, "remixcheck.txt"), report.ToString());
+        return rc;
+    }
+
+    private static double Rms(float[] a) => a.Length == 0 ? 0 : Math.Sqrt(a.Select(x => (double)x * x).Sum() / a.Length);
+
+    private static unsafe (long Start, float[] Samples) DecodeAll(string file, int stream)
+    {
+        FFmpeg.AutoGen.AVFormatContext* fmt = null;
+        FFmpeg.AutoGen.ffmpeg.avformat_open_input(&fmt, file, null, null).Check("open");
+        var pkt = FFmpeg.AutoGen.ffmpeg.av_packet_alloc();
+        try
+        {
+            FFmpeg.AutoGen.ffmpeg.avformat_find_stream_info(fmt, null).Check("info");
+            using var dec = new TrackDecoder(fmt, stream);
+            var q = new SampleQueue();
+            while (FFmpeg.AutoGen.ffmpeg.av_read_frame(fmt, pkt) >= 0)
+            {
+                if (pkt->stream_index == stream) dec.Decode(pkt, q);
+                FFmpeg.AutoGen.ffmpeg.av_packet_unref(pkt);
+            }
+            dec.Decode(null, q);
+            long start = q.Start;
+            int frames = (int)(q.End - start);
+            var all = new float[frames * 2];
+            q.Take(start, all, frames);
+            return (start, all);
+        }
+        finally
+        {
+            FFmpeg.AutoGen.ffmpeg.av_packet_free(&pkt);
+            FFmpeg.AutoGen.ffmpeg.avformat_close_input(&fmt);
+        }
     }
 
     private static Window ShowMotionWindow()

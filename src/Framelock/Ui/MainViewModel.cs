@@ -90,6 +90,36 @@ public sealed class MainViewModel : ObservableObject
         ApplyQuickPresetCommand = new RelayCommand(p => { if (p is QuickPreset q) ApplyQuickPreset(q); });
         SetAnchorCommand = new RelayCommand(p => { if (SelectedOverlay != null && p is string a) SelectedOverlay.Anchor = Enum.Parse<OverlayAnchor>(a); });
         UseSuggestedBitrateCommand = new RelayCommand(() => S.BitrateMbps = SuggestedBitrate);
+
+        OpenRecordingCommand = new RelayCommand(p => { if (p is RecordingItem r) OpenFile(r.Path); });
+        RevealRecordingCommand = new RelayCommand(p => { if (p is RecordingItem r) RevealFile(r.Path); });
+        FixAudioCommand = new RelayCommand(p => { if (p is RecordingItem r) RemixWindow.ShowFor(r.Path); });
+        RecycleRecordingCommand = new RelayCommand(p => { if (p is RecordingItem r) RecycleRecording(r); });
+        RefreshRecordingsCommand = new RelayCommand(() => Recordings.Refresh(S.OutputFolder));
+        // New files (recordings, replays, fixed audio) show up in the Recordings tab right away.
+        Rec.Notify += n => { if (n.FilePath != null) Application.Current.Dispatcher.BeginInvoke(() => Recordings.RefreshIfLoaded(S.OutputFolder)); };
+        RemixWindow.Saved += _ => Recordings.RefreshIfLoaded(S.OutputFolder);
+        var folder = S.OutputFolder;
+        Task.Run(() => AudioRemixer.CleanStaleTemps(folder));
+    }
+
+    public RecordingsModel Recordings { get; } = new();
+    public ICommand OpenRecordingCommand { get; }
+    public ICommand RevealRecordingCommand { get; }
+    public ICommand FixAudioCommand { get; }
+    public ICommand RecycleRecordingCommand { get; }
+    public ICommand RefreshRecordingsCommand { get; }
+
+    private void RecycleRecording(RecordingItem r)
+    {
+        try
+        {
+            Native.MoveToRecycleBin(r.Path);
+            Recordings.Items.Remove(r);
+            Recordings.Refresh(S.OutputFolder);
+            Toast.Show(new Notification("Moved to the Recycle Bin", System.IO.Path.GetFileName(r.Path)));
+        }
+        catch (Exception ex) { Toast.Show(new Notification("Couldn't delete", ex.Message, IsError: true)); }
     }
 
     public ICommand RecordCommand { get; }
@@ -468,6 +498,7 @@ public sealed class MainViewModel : ObservableObject
         switch (e.PropertyName)
         {
             case nameof(AppSettings.Quality): OnPropertyChanged(nameof(QualityLabel)); break;
+            case nameof(AppSettings.OutputFolder): Recordings.RefreshIfLoaded(S.OutputFolder); break;
             case nameof(AppSettings.SourceKind) or nameof(AppSettings.DisplayId) or nameof(AppSettings.WindowTitle)
                 or nameof(AppSettings.RegionX) or nameof(AppSettings.RegionY) or nameof(AppSettings.RegionWidth) or nameof(AppSettings.RegionHeight):
                 OnPropertyChanged(nameof(SourceSummary)); break;
@@ -502,6 +533,12 @@ public sealed class MainViewModel : ObservableObject
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
         }
         catch (Exception ex) { Log.Warn("Open folder failed: " + ex.Message); }
+    }
+
+    public static void OpenFile(string path)
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
+        catch (Exception ex) { Log.Warn("Open failed: " + ex.Message); }
     }
 
     public static void RevealFile(string file)

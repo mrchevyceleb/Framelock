@@ -332,17 +332,17 @@ public sealed class Compositor : IDisposable
         _ctx.CopyResource(_previewStaging[slot], _previewRt);
         _previewStagingSerial[slot] = ++_previewSerial;
 
-        // Read the slot written two calls ago - the GPU has finished with it, so Map never stalls.
+        // Read the slot written two calls ago - normally the GPU is done with it. When a game holds the GPU it may not be:
+        // then skip this preview rather than make capture wait.
         int readSlot = (int)(_previewSerial % _previewStaging.Length);
         if (_previewSerial < 3 || _previewStagingSerial[readSlot] == 0) return false;
-        return ReadStaging(_previewStaging[readSlot], PreviewWidth, PreviewHeight, dest);
+        return ReadStaging(_previewStaging[readSlot], PreviewWidth, PreviewHeight, dest, wait: false);
     }
 
-    private unsafe bool ReadStaging(ID3D11Texture2D staging, int w, int h, byte[] dest)
+    private unsafe bool ReadStaging(ID3D11Texture2D staging, int w, int h, byte[] dest, bool wait = true)
     {
-        MappedSubresource m;
-        try { m = _ctx.Map(staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None); }
-        catch { return false; }
+        if (_ctx.Map(staging, 0, MapMode.Read, wait ? Vortice.Direct3D11.MapFlags.None : Vortice.Direct3D11.MapFlags.DoNotWait, out MappedSubresource m).Failure)
+            return false;
         try
         {
             int rowBytes = w * 4;

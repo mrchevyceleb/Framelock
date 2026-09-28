@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Framelock.Core;
+using Framelock.Encoding;
 using Framelock.Engine;
 
 namespace Framelock.Ui;
@@ -123,11 +124,18 @@ public static class Toast
         {
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
             var open = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Open", Padding = new Thickness(10, 3, 10, 3), FontSize = 12 };
-            open.Click += (_, _) => { OpenFile(n.FilePath); };
+            open.Click += (_, _) => MainViewModel.OpenFile(n.FilePath);
             var reveal = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Show in folder", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(6, 0, 0, 0) };
             reveal.Click += (_, _) => MainViewModel.RevealFile(n.FilePath);
             actions.Children.Add(open);
             actions.Children.Add(reveal);
+            if (MediaFile.VideoExtensions.Contains(Path.GetExtension(n.FilePath).ToLowerInvariant()) && !n.FilePath.EndsWith(".recording.mkv", StringComparison.OrdinalIgnoreCase))
+            {
+                // Game too loud? Rebalance game and mic right after stopping.
+                var fix = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Fix audio", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(6, 0, 0, 0), ToolTip = "Change the game and mic volume" };
+                fix.Click += (_, _) => RemixWindow.ShowFor(n.FilePath);
+                actions.Children.Add(fix);
+            }
             body.Children.Add(actions);
         }
 
@@ -173,11 +181,5 @@ public static class Toast
             d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
         }
         return null;
-    }
-
-    private static void OpenFile(string path)
-    {
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
-        catch (Exception ex) { Log.Warn("Open failed: " + ex.Message); }
     }
 }

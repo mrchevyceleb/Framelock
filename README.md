@@ -9,6 +9,7 @@ Frame-exact screen and gameplay recorder for Windows 10 (2004+) / 11.
 - Records desktop or game audio and your microphone, with separate tracks, a noise gate, push-to-talk and a sync offset.
 - Instant replay buffer, markers that become chapters in the file (plus a YouTube chapter list), pause, and file splitting.
 - Crash-safe recording: it writes MKV while recording, then remuxes to MP4.
+- A Recordings tab lists your videos with thumbnails. **Fix audio** rebalances game and mic volume after recording: you hear the new balance live, then save it as a new file or replace the original. The video is copied untouched and only the mix track is rebuilt, so there is no quality loss.
 - Global hotkeys, a tray icon and a floating HUD. Framelock keeps its own windows out of your recordings.
 
 ## Build
@@ -23,9 +24,10 @@ This needs the .NET 10 SDK. The published folder is self-contained, so you can c
 
 ## Dev aids
 
-- `Framelock.exe --selftest seconds=6 fps=120 w=3840 h=2160 encoder=auto pause=1 replay=1` runs a headless end-to-end recording and writes a report to `%APPDATA%\Framelock\logs\selftest.txt`.
+- `Framelock.exe --selftest seconds=6 fps=120 w=3840 h=2160 encoder=auto pause=1 replay=1` runs a headless end-to-end recording and writes a report to `%APPDATA%\Framelock\logs\selftest.txt`. Add `gpuload=2400` to run it while a separate process keeps the GPU at 100% like a game (more iterations = a slower game), and `motion=0` to skip the small moving test window.
 - `Framelock.exe --uishot=<folder>` renders every settings tab to a PNG.
 - `Framelock.exe --regionshot=<file.png>` renders the region picker's toolbar to a PNG without opening the full-screen picker.
+- `Framelock.exe --remixcheck=<video>` runs Fix audio on a copy of a recording, checks the new mix against the separate tracks, and writes `%APPDATA%\Framelock\logs\remixcheck.txt`.
 - `Framelock.exe --tray` starts hidden in the tray. This is the mode used by "Start with Windows".
 
 Settings and logs are stored in `%APPDATA%\Framelock`.

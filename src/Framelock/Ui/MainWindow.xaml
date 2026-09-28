@@ -956,6 +956,98 @@
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
+
+                        <!-- ===================== RECORDINGS ===================== -->
+                        <TabItem Header="Recordings" x:Name="RecordingsTab">
+                            <Grid Margin="0,0,10,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid Margin="0,0,0,6">
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0" VerticalAlignment="Center" Text="{Binding Recordings.Summary}" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button Style="{StaticResource IconButton}" Width="30" Height="30" Padding="0" ToolTip="Refresh" Command="{Binding RefreshRecordingsCommand}">
+                                            <TextBlock Style="{StaticResource Icon}" FontSize="13" Text="&#xE72C;" />
+                                        </Button>
+                                        <Button Style="{StaticResource IconButton}" Width="30" Height="30" Padding="0" ToolTip="Open recordings folder" Command="{Binding OpenFolderCommand}">
+                                            <TextBlock Style="{StaticResource Icon}" FontSize="13" Text="&#xE838;" />
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                                <ListBox Grid.Row="1" x:Name="RecordingsList" ItemsSource="{Binding Recordings.Items}" Padding="0,0,0,12"
+                                         VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+                                         MouseDoubleClick="RecordingsList_MouseDoubleClick" KeyDown="RecordingsList_KeyDown">
+                                    <ListBox.ItemContainerStyle>
+                                        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                                            <Setter Property="Padding" Value="6" />
+                                            <Setter Property="Margin" Value="0,0,0,4" />
+                                        </Style>
+                                    </ListBox.ItemContainerStyle>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate DataType="{x:Type ui:RecordingItem}">
+                                            <Grid Background="Transparent" Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ListBox}}">
+                                                <Grid.ContextMenu>
+                                                    <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
+                                                        <MenuItem Header="Open" Command="{Binding OpenRecordingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                        <MenuItem Header="Fix audio…" Command="{Binding FixAudioCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                        <MenuItem Header="Show in folder" Command="{Binding RevealRecordingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                        <Separator />
+                                                        <MenuItem Header="Move to Recycle Bin" Command="{Binding RecycleRecordingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                    </ContextMenu>
+                                                </Grid.ContextMenu>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="128" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Width="128" Height="72" CornerRadius="6" Background="{StaticResource Bg3Brush}" VerticalAlignment="Top">
+                                                    <Grid>
+                                                        <TextBlock Style="{StaticResource Icon}" FontSize="20" Foreground="{StaticResource TextMutedBrush}" Text="&#xE714;" />
+                                                        <Border CornerRadius="6">
+                                                            <Border.Background>
+                                                                <ImageBrush ImageSource="{Binding Thumb}" Stretch="UniformToFill" />
+                                                            </Border.Background>
+                                                        </Border>
+                                                        <Border HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="4" Padding="5,1" CornerRadius="4" Background="#CC0D0E12"
+                                                                Visibility="{Binding HasDuration, Converter={StaticResource BoolVis}}">
+                                                            <TextBlock Text="{Binding Duration}" FontSize="11" Foreground="{StaticResource TextBrush}" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" />
+                                                    <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" Text="{Binding Meta}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Style="{StaticResource Hint}" Margin="0,1,0,0" Text="{Binding When}" TextTrimming="CharacterEllipsis" />
+                                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                                        <Button Style="{StaticResource GhostButton}" Padding="8,3" FontSize="12" IsEnabled="{Binding CanFixAudio}"
+                                                                ToolTip="{Binding FixAudioTip}" ToolTipService.ShowOnDisabled="True"
+                                                                Command="{Binding DataContext.FixAudioCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Style="{StaticResource Icon}" FontSize="12" Text="&#xE9E9;" Margin="0,0,6,0" />
+                                                                <TextBlock Text="Fix audio" />
+                                                            </StackPanel>
+                                                        </Button>
+                                                        <Button Style="{StaticResource GhostButton}" Padding="8,3" FontSize="12" Margin="6,0,0,0" Content="Open"
+                                                                Command="{Binding DataContext.OpenRecordingCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
+                                                        <Button Style="{StaticResource IconButton}" Width="28" Height="26" Padding="0" Margin="4,0,0,0" ToolTip="Show in folder"
+                                                                Command="{Binding DataContext.RevealRecordingCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}">
+                                                            <TextBlock Style="{StaticResource Icon}" FontSize="12" Text="&#xE838;" />
+                                                        </Button>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="20,0,20,60"
+                                            Visibility="{Binding Recordings.IsEmpty, Converter={StaticResource BoolVis}}">
+                                    <TextBlock Style="{StaticResource Icon}" FontSize="28" Foreground="{StaticResource TextMutedBrush}" Text="&#xE714;" />
+                                    <TextBlock Margin="0,10,0,0" HorizontalAlignment="Center" FontWeight="SemiBold" Text="No recordings yet" />
+                                    <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0" TextAlignment="Center" TextWrapping="Wrap"
+                                               Text="Finished videos show up here, newest first. Fix the game and mic balance with one click." />
+                                </StackPanel>
+                            </Grid>
+                        </TabItem>
                     </TabControl>
                 </Border>
             </Grid>

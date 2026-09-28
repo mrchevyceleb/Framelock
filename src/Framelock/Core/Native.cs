@@ -146,6 +146,7 @@ public static partial class Native
     [DllImport("gdi32.dll")] public static extern int D3DKMTSetProcessSchedulingPriorityClass(IntPtr process, int priorityClass);
     public const int D3DKMT_SCHEDULINGPRIORITYCLASS_ABOVE_NORMAL = 3;
     public const int D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH = 4;
+    public const int D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME = 5;
 
     // ---------- display config (SDR white level) ----------
     [StructLayout(LayoutKind.Sequential)] public struct LUID { public uint LowPart; public int HighPart; }
@@ -266,5 +267,38 @@ public static partial class Native
         DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, sizeof(int));
         int round = 2; // DWMWCP_ROUND
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref round, sizeof(int));
+    }
+    // ---------- Recycle Bin ----------
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHFILEOPSTRUCT
+    {
+        public IntPtr hwnd;
+        public uint wFunc;
+        public string pFrom;
+        public string? pTo;
+        public ushort fFlags;
+        public bool fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        public string? lpszProgressTitle;
+    }
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] private static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
+
+    /// <summary>
+    /// Moves a file to the Recycle Bin without shell UI, except Windows' own warning when the drive has no Recycle Bin
+    /// (the file would be deleted for good). Throws when it couldn't, or the user said no.
+    /// </summary>
+    public static void MoveToRecycleBin(string path)
+    {
+        const uint FO_DELETE = 3;
+        const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400, FOF_WANTNUKEWARNING = 0x4000;
+        var op = new SHFILEOPSTRUCT
+        {
+            wFunc = FO_DELETE,
+            pFrom = System.IO.Path.GetFullPath(path) + "\0", // the list is double-null terminated
+            fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING,
+        };
+        int r = SHFileOperation(ref op);
+        if (r != 0 || op.fAnyOperationsAborted || System.IO.File.Exists(path))
+            throw new System.IO.IOException($"Couldn't move {System.IO.Path.GetFileName(path)} to the Recycle Bin (it may be open in another app).");
     }
 }

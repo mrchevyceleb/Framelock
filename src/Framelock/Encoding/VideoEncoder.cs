@@ -13,7 +13,8 @@ public sealed record VideoEncoderSettings(RateControlMode RateControl, int Quali
 
 /// <summary>
 /// H.264/HEVC/AV1 encoder. NVENC/AMF take the compositor's NV12 texture zero-copy through an FFmpeg D3D11 frame pool;
-/// QSV/CPU encoders get a staged system-memory copy and encode on a worker thread so capture never blocks.
+/// QSV/CPU encoders get a staged system-memory copy. Either way the encoder itself runs on a worker thread, so capture
+/// never blocks: under a saturated GPU (a game at 100%) one hardware submit can wait a whole game frame for the GPU.
 /// Encode() must be called from the video thread.
 /// </summary>
 public sealed unsafe class VideoEncoder : IDisposable
@@ -42,15 +43,18 @@ public sealed unsafe class VideoEncoder : IDisposable
     private long _framesSubmitted, _framesDropped, _bytesOut;
     private bool _flushed;
 
+    // ---- encoder worker (both paths) ----
+    private readonly BlockingCollection<IntPtr> _queue; // AVFrame*; completing it flushes the encoder
+    private readonly Thread _worker;
+    private volatile Exception? _workerError;
+    private bool _workerExited;
+
     // ---- system-memory path ----
     private readonly ID3D11Texture2D[]? _staging;
     private readonly (long pts, bool key, bool used)[]? _stagingInfo;
     private int _stagingWrite;
     private readonly bool _planar; // encoder wants yuv420p instead of nv12
-    private readonly BlockingCollection<IntPtr>? _queue; // AVFrame*
     private readonly ConcurrentBag<IntPtr>? _framePool;
-    private readonly Thread? _worker;
-    private Exception? _workerError;
 
     public VideoEncoder(EncoderInfo info, D3DContext d3d, int width, int height, int fps, VideoEncoderSettings s, bool nv12Input, Action<EncodedPacket> output)
     {
@@ -121,11 +125,12 @@ public sealed unsafe class VideoEncoder : IDisposable
             for (int i = 0; i < _staging.Length; i++)
                 _staging[i] = d3d.Device.CreateTexture2D(new Texture2DDescription(Format.NV12, (uint)width, (uint)height, 1, 1,
                     BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Read, 1, 0, ResourceOptionFlags.None));
-            _queue = new BlockingCollection<IntPtr>(new ConcurrentQueue<IntPtr>(), 6);
             _framePool = new ConcurrentBag<IntPtr>();
-            _worker = new Thread(WorkerLoop) { Name = "Framelock video encoder", IsBackground = true, Priority = ThreadPriority.AboveNormal };
-            _worker.Start();
         }
+        // Zero-copy frames are pool textures (FFmpeg's pool is the real bound); system-memory frames are big, keep few.
+        _queue = new BlockingCollection<IntPtr>(new ConcurrentQueue<IntPtr>(), _zeroCopy ? 10 : 6);
+        _worker = new Thread(WorkerLoop) { Name = "Framelock video encoder", IsBackground = true, Priority = ThreadPriority.AboveNormal };
+        _worker.Start();
 
         Description = $"{info.Label} {width}×{height}@{fps} {s.RateControl} q{s.Quality} {s.Speed}";
         Log.Info("Video encoder opened: " + Description);
@@ -306,14 +311,15 @@ public sealed unsafe class VideoEncoder : IDisposable
 
     private void EncodeHardware(ID3D11Texture2D source, long pts, bool key)
     {
+        if (_workerError != null) throw new FFmpegException("Encoder failed: " + _workerError.Message);
         int r = ffmpeg.av_hwframe_get_buffer(_hwFrames, _hwFrame, 0);
         if (r < 0)
         {
             Interlocked.Increment(ref _framesDropped);
             if (_framesDropped % 60 == 1) Log.Warn($"Encoder frame pool exhausted ({FFmpegSetup.ErrorText(r)}) - encoder can't keep up");
-            Drain();
             return;
         }
+        AVFrame* queued = null;
         try
         {
             var texPtr = (IntPtr)_hwFrame->data[0];
@@ -332,10 +338,23 @@ public sealed unsafe class VideoEncoder : IDisposable
             _hwFrame->color_trc = AVColorTransferCharacteristic.AVCOL_TRC_BT709;
             _hwFrame->colorspace = AVColorSpace.AVCOL_SPC_BT709;
             _hwFrame->color_range = AVColorRange.AVCOL_RANGE_MPEG;
-            Send(_hwFrame);
+            // Hand the frame (it holds its pool texture) to the worker; the copy above is already queued on the GPU.
+            queued = ffmpeg.av_frame_alloc();
+            ffmpeg.av_frame_move_ref(queued, _hwFrame);
+            if (!_queue.TryAdd((IntPtr)queued))
+            {
+                Interlocked.Increment(ref _framesDropped);
+                if (_framesDropped % 60 == 1) Log.Warn("Encoder queue full - encoder can't keep up");
+                return;
+            }
+            queued = null;
             Interlocked.Increment(ref _framesSubmitted);
         }
-        finally { ffmpeg.av_frame_unref(_hwFrame); }
+        finally
+        {
+            ffmpeg.av_frame_unref(_hwFrame);
+            if (queued != null) ffmpeg.av_frame_free(&queued);
+        }
     }
 
     private void Send(AVFrame* frame)
@@ -388,7 +407,7 @@ public sealed unsafe class VideoEncoder : IDisposable
         _stagingInfo[slot].used = false;
         if (!_framePool!.TryTake(out var fp))
         {
-            if (_queue!.Count >= 6) { Interlocked.Increment(ref _framesDropped); return; }
+            if (_queue.Count >= 6) { Interlocked.Increment(ref _framesDropped); return; }
             var nf = ffmpeg.av_frame_alloc();
             nf->format = (int)_ctx->pix_fmt;
             nf->width = Width;
@@ -433,7 +452,7 @@ public sealed unsafe class VideoEncoder : IDisposable
         f->color_trc = AVColorTransferCharacteristic.AVCOL_TRC_BT709;
         f->colorspace = AVColorSpace.AVCOL_SPC_BT709;
         f->color_range = AVColorRange.AVCOL_RANGE_MPEG;
-        if (!_queue!.TryAdd(fp))
+        if (!_queue.TryAdd(fp))
         {
             Interlocked.Increment(ref _framesDropped);
             _framePool.Add(fp);
@@ -446,12 +465,17 @@ public sealed unsafe class VideoEncoder : IDisposable
     {
         try
         {
-            foreach (var fp in _queue!.GetConsumingEnumerable())
+            foreach (var fp in _queue.GetConsumingEnumerable())
             {
-                if (fp == IntPtr.Zero) { SendFlush(); break; }
                 try { Send((AVFrame*)fp); }
-                finally { _framePool!.Add(fp); }
+                finally
+                {
+                    if (_framePool != null) _framePool.Add(fp);
+                    else { var f = (AVFrame*)fp; ffmpeg.av_frame_free(&f); } // releases the pool texture
+                }
             }
+            // Flush() completed the queue and every frame is in: push the encoder's delayed frames out.
+            SendFlush();
         }
         catch (Exception ex)
         {
@@ -473,8 +497,7 @@ public sealed unsafe class VideoEncoder : IDisposable
         _flushed = true;
         try
         {
-            if (_zeroCopy) SendFlush();
-            else
+            if (!_zeroCopy)
             {
                 // Read back what is still sitting in the staging ring, oldest first.
                 for (int i = 0; i < _staging!.Length; i++)
@@ -482,12 +505,12 @@ public sealed unsafe class VideoEncoder : IDisposable
                     int slot = (_stagingWrite + i) % _staging.Length;
                     if (_stagingInfo![slot].used) ReadbackSlot(slot);
                 }
-                _queue!.Add(IntPtr.Zero);
-                _queue.CompleteAdding();
-                _worker!.Join(10_000);
             }
         }
         catch (Exception ex) { Log.Error("Encoder flush failed", ex); }
+        _queue.CompleteAdding();
+        _workerExited = _worker.Join(10_000);
+        if (!_workerExited) Log.Warn("Encoder worker didn't finish in time");
     }
 
     private void FreeContext()
@@ -499,19 +522,21 @@ public sealed unsafe class VideoEncoder : IDisposable
 
     public void Dispose()
     {
-        if (!_flushed) Flush();
-        if (_queue != null)
+        Flush();
+        if (!_workerExited) _workerExited = _worker.Join(5_000);
+        if (_staging != null) foreach (var t in _staging) t?.Dispose();
+        if (_hwFrame != null) { var f = _hwFrame; ffmpeg.av_frame_free(&f); _hwFrame = null; }
+        if (!_workerExited)
         {
-            if (!_queue.IsAddingCompleted) _queue.CompleteAdding();
-            _worker?.Join(5_000);
-            while (_queue.TryTake(out var q)) if (q != IntPtr.Zero) { var f = (AVFrame*)q; ffmpeg.av_frame_free(&f); }
+            // Stuck inside the driver. Freeing the encoder under it would crash the app, so leave its state allocated.
+            Log.Warn("Encoder worker is stuck; leaving its encoder state allocated");
+            return;
         }
+        while (_queue.TryTake(out var q)) { var f = (AVFrame*)q; ffmpeg.av_frame_free(&f); }
         if (_framePool != null)
             while (_framePool.TryTake(out var p)) { var f = (AVFrame*)p; ffmpeg.av_frame_free(&f); }
-        if (_hwFrame != null) { var f = _hwFrame; ffmpeg.av_frame_free(&f); _hwFrame = null; }
         foreach (var t in _poolTextures.Values) t.Dispose();
         _poolTextures.Clear();
-        if (_staging != null) foreach (var t in _staging) t?.Dispose();
         FreeContext();
     }
 }

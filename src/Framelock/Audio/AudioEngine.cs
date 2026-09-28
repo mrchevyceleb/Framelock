@@ -232,7 +232,7 @@ public sealed class AudioEngine : IDisposable
         return peak;
     }
 
-    private static float SoftClip(float x)
+    internal static float SoftClip(float x)
     {
         const float t = 0.9f;
         float a = Math.Abs(x);

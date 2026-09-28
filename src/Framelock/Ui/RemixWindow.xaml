@@ -1,0 +1,144 @@
+<Window x:Class="Framelock.Ui.RemixWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:Framelock.Ui"
+        Title="Fix audio · Framelock" Icon="/Assets/Framelock.ico" Width="560" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Bg1Brush}" Foreground="{StaticResource TextBrush}"
+        FontFamily="{StaticResource UiFont}" FontSize="13"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="44" ResizeBorderThickness="0" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+    <Window.Resources>
+        <ui:Percent x:Key="Pct" />
+        <Style x:Key="Icon" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="LevelSlider" TargetType="Slider" BasedOn="{StaticResource {x:Type Slider}}">
+            <Setter Property="Minimum" Value="0" />
+            <Setter Property="Maximum" Value="3" />
+            <Setter Property="Value" Value="1" />
+            <Setter Property="TickFrequency" Value="0.05" />
+            <Setter Property="IsSnapToTickEnabled" Value="True" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="8,0" />
+            <Setter Property="ToolTip" Value="100% = as recorded. Double-click to reset." />
+        </Style>
+        <Style x:Key="MuteToggle" TargetType="ToggleButton" BasedOn="{StaticResource IconToggleButton}">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="ToolTip" Value="Mute" />
+        </Style>
+    </Window.Resources>
+
+    <Border BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1" Background="{StaticResource Bg1Brush}">
+        <StackPanel>
+            <Grid Height="44">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="20,0,0,0">
+                    <TextBlock Style="{StaticResource Icon}" FontSize="15" Text="&#xE9E9;" Foreground="{StaticResource AccentBrush}" Margin="0,0,10,0" />
+                    <TextBlock Text="Fix audio" FontWeight="SemiBold" FontSize="14" VerticalAlignment="Center" />
+                </StackPanel>
+                <Button Style="{StaticResource TitleBarCloseButton}" HorizontalAlignment="Right" WindowChrome.IsHitTestVisibleInChrome="True" Click="Close_Click">
+                    <TextBlock Style="{StaticResource Icon}" FontSize="10" Text="&#xE8BB;" />
+                </Button>
+            </Grid>
+
+            <StackPanel Margin="20,4,20,20">
+                <TextBlock x:Name="FileName" FontWeight="SemiBold" FontSize="15" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="FileMeta" Style="{StaticResource Hint}" Margin="0,3,0,0" />
+
+                <!-- player -->
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0" Padding="10,8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="PlayButton" Style="{StaticResource IconButton}" Width="36" Height="36" Padding="0" Click="Play_Click" ToolTip="Play (Space)">
+                            <TextBlock x:Name="PlayGlyph" Style="{StaticResource Icon}" FontSize="15" Text="&#xE768;" />
+                        </Button>
+                        <Slider x:Name="SeekSlider" Grid.Column="1" Margin="10,0" Minimum="0" Maximum="1" VerticalAlignment="Center" ValueChanged="Seek_ValueChanged" />
+                        <TextBlock x:Name="TimeText" Grid.Column="2" Style="{StaticResource ValueText}" VerticalAlignment="Center" Text="0:00 / 0:00" />
+                    </Grid>
+                </Border>
+
+                <!-- levels -->
+                <Grid Margin="0,20,0,10">
+                    <TextBlock Style="{StaticResource SectionHeader}" Text="LEVELS" VerticalAlignment="Center" />
+                    <Button Style="{StaticResource GhostButton}" HorizontalAlignment="Right" Padding="10,3" FontSize="12" Content="Reset" Click="Reset_Click" ToolTip="Back to 100% (as recorded)" />
+                </Grid>
+
+                <Grid x:Name="DesktopRow" Margin="0,0,0,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="48" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="DesktopLabel" Text="Game / PC audio" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <ToggleButton x:Name="DesktopMute" Grid.Column="1" Style="{StaticResource MuteToggle}" Checked="Levels_Changed" Unchecked="Levels_Changed">
+                        <TextBlock x:Name="DesktopMuteGlyph" Style="{StaticResource Icon}" FontSize="14" Text="&#xE767;" />
+                    </ToggleButton>
+                    <Slider x:Name="DesktopSlider" Grid.Column="2" Style="{StaticResource LevelSlider}" ValueChanged="Levels_Changed" MouseDoubleClick="Slider_Reset" />
+                    <TextBlock Grid.Column="3" Style="{StaticResource ValueText}" VerticalAlignment="Center" HorizontalAlignment="Right"
+                               Text="{Binding Value, ElementName=DesktopSlider, Converter={StaticResource Pct}}" />
+                    <ProgressBar x:Name="DesktopMeter" Grid.Row="1" Grid.Column="2" Margin="8,5,8,0" Style="{StaticResource MeterBar}" />
+                </Grid>
+
+                <Grid x:Name="MicRow" Margin="0,0,0,12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="120" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="48" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Microphone" VerticalAlignment="Center" />
+                    <ToggleButton x:Name="MicMute" Grid.Column="1" Style="{StaticResource MuteToggle}" Checked="Levels_Changed" Unchecked="Levels_Changed">
+                        <TextBlock x:Name="MicMuteGlyph" Style="{StaticResource Icon}" FontSize="14" Text="&#xE720;" />
+                    </ToggleButton>
+                    <Slider x:Name="MicSlider" Grid.Column="2" Style="{StaticResource LevelSlider}" ValueChanged="Levels_Changed" MouseDoubleClick="Slider_Reset" />
+                    <TextBlock Grid.Column="3" Style="{StaticResource ValueText}" VerticalAlignment="Center" HorizontalAlignment="Right"
+                               Text="{Binding Value, ElementName=MicSlider, Converter={StaticResource Pct}}" />
+                    <ProgressBar x:Name="MicMeter" Grid.Row="1" Grid.Column="2" Margin="8,5,8,0" Style="{StaticResource MeterBar}" />
+                </Grid>
+                <TextBlock x:Name="LevelsHint" Style="{StaticResource Hint}" TextWrapping="Wrap"
+                           Text="100% is what you recorded. Press play and move the sliders to hear the new balance." />
+
+                <!-- save -->
+                <TextBlock Style="{StaticResource SectionHeader}" Text="SAVE" Margin="0,20,0,8" />
+                <RadioButton x:Name="SaveNew" GroupName="save" IsChecked="True" Content="Save as a new file (keeps the original)" />
+                <RadioButton x:Name="SaveReplace" GroupName="save" Margin="0,8,0,0" Content="Replace the original (the old file goes to the Recycle Bin)" />
+
+                <StackPanel x:Name="ProgressPanel" Margin="0,16,0,0" Visibility="Collapsed">
+                    <ProgressBar x:Name="ExportProgress" Height="6" Minimum="0" Maximum="1" />
+                    <TextBlock x:Name="ProgressText" Style="{StaticResource Hint}" Margin="0,6,0,0" Text="Saving…" />
+                </StackPanel>
+                <TextBlock x:Name="ErrorText" Margin="0,12,0,0" Foreground="{StaticResource RecBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+                    <Button x:Name="CancelButton" Style="{StaticResource GhostButton}" Padding="16,7" Content="Cancel" Click="Cancel_Click" />
+                    <Button x:Name="SaveButton" Style="{StaticResource PrimaryButton}" Padding="16,7" Margin="8,0,0,0" Click="Save_Click" IsDefault="True">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" FontSize="13" Text="&#xE74E;" Margin="0,0,8,0" />
+                            <TextBlock Text="Save" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

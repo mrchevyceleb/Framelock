@@ -548,7 +548,29 @@ public partial class MainWindow : Window
 
     private void SettingsTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (e.OriginalSource == SettingsTabs) UpdateOverlayAdorner();
+        if (e.OriginalSource != SettingsTabs) return;
+        UpdateOverlayAdorner();
+        if (SettingsTabs.SelectedItem == RecordingsTab) _vm.Recordings.Refresh(_s.OutputFolder);
+    }
+
+    private void RecordingsList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject d && ItemsControl.ContainerFromElement(RecordingsList, d) is ListBoxItem { DataContext: RecordingItem r }
+            && FindAncestor<Button>(d) == null)
+            MainViewModel.OpenFile(r.Path);
+    }
+
+    private void RecordingsList_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (RecordingsList.SelectedItem is not RecordingItem r) return;
+        if (e.Key == Key.Enter) { MainViewModel.OpenFile(r.Path); e.Handled = true; }
+        else if (e.Key == Key.Delete) { _vm.RecycleRecordingCommand.Execute(r); e.Handled = true; }
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? d) where T : DependencyObject
+    {
+        while (d != null && d is not T) d = d is Visual ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d);
+        return d as T;
     }
 
     // ================================================================== source pickers
@@ -625,7 +647,7 @@ public partial class MainWindow
         for (int i = 0; i < SettingsTabs.Items.Count; i++)
         {
             SettingsTabs.SelectedIndex = i;
-            await Task.Delay(400);
+            await Task.Delay(SettingsTabs.SelectedItem == RecordingsTab ? 3000 : 400); // thumbnails load in the background
             Snap(Path.Combine(folder, $"tab{i}.png"));
         }
 
