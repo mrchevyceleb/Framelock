@@ -10,7 +10,13 @@ using Vortice.Mathematics;
 namespace Framelock.Graphics;
 
 /// <summary>One overlay draw for this frame, in output pixels.</summary>
-public readonly record struct OverlayDraw(OverlayBitmap Bitmap, float X, float Y, float W, float H, float Opacity);
+public readonly record struct OverlayDraw(OverlayBitmap? Bitmap, float X, float Y, float W, float H, float Opacity)
+{
+    public ID3D11ShaderResourceView? Texture { get; init; }
+    public int TextureWidth { get; init; }
+    public int TextureHeight { get; init; }
+    public bool Mirror { get; init; }
+}
 
 /// <summary>Where the captured image lands in the output frame.</summary>
 public readonly record struct SourceLayout(float DstX, float DstY, float DstW, float DstH, float U0, float V0, float U1, float V1, float RatioX, float RatioY)
@@ -243,14 +249,16 @@ public sealed class Compositor : IDisposable
             foreach (var o in overlays)
             {
                 if (o.Opacity <= 0.001f || o.W < 1 || o.H < 1) continue;
-                var srv = GetOverlaySrv(o.Bitmap);
+                var srv = o.Texture ?? (o.Bitmap != null ? GetOverlaySrv(o.Bitmap) : null);
                 if (srv == null) continue;
+                int tw = o.Texture != null ? o.TextureWidth : o.Bitmap!.Width;
+                int th = o.Texture != null ? o.TextureHeight : o.Bitmap!.Height;
                 _ctx.PSSetShaderResource(0, srv);
                 SetParams(new Params
                 {
                     DstRect = Ndc(o.X, o.Y, o.W, o.H, Width, Height),
-                    SrcRect = new Vector4(0, 0, 1, 1),
-                    SrcSize = new Vector4(o.Bitmap.Width, o.Bitmap.Height, 1f / o.Bitmap.Width, 1f / o.Bitmap.Height),
+                    SrcRect = o.Mirror ? new Vector4(1, 0, 0, 1) : new Vector4(0, 0, 1, 1),
+                    SrcSize = new Vector4(tw, th, 1f / tw, 1f / th),
                     Misc = new Vector4(Math.Clamp(o.Opacity, 0, 1), 1, 1, 1),
                     Misc2 = new Vector4(0, 1f / Width, 1f / Height, 0),
                 });

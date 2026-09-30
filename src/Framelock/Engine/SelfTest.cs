@@ -56,6 +56,15 @@ public static class SelfTest
                 s.RegionX = int.Parse(Opt("rx", "100")); s.RegionY = int.Parse(Opt("ry", "100"));
                 s.RegionWidth = int.Parse(Opt("rw", "1280")); s.RegionHeight = int.Parse(Opt("rh", "720"));
             }
+            if (Opt("source", "display") == "webcam" || Opt("webcam", "0") == "1")
+            {
+                if (Opt("source", "display") == "webcam") s.SourceKind = SourceKind.Webcam;
+                else s.Overlays.Add(new OverlayItem { Kind = OverlayKind.Webcam, Anchor = OverlayAnchor.BottomLeft, Width = 0.3 });
+                s.WebcamWidth = int.Parse(Opt("camw", "1280")); s.WebcamHeight = int.Parse(Opt("camh", "720"));
+                s.WebcamFps = int.Parse(Opt("camfps", "30"));
+                s.WebcamDeviceId = opts.GetValueOrDefault("camera");
+                s.WebcamMirror = Opt("mirror", "0") == "1";
+            }
             s.Overlays.Add(new OverlayItem { Kind = OverlayKind.Text, Text = "@framelock", Anchor = OverlayAnchor.BottomRight, Width = 0.2 });
             foreach (var o in s.Overlays) Graphics.OverlayRenderer.Refresh(o);
 
@@ -82,6 +91,7 @@ public static class SelfTest
             await rc.StartRecordingAsync();
             if (!rc.IsRecording) throw new Exception("Recording did not start: " + rc.StatusText);
             Say($"Recording: {rc.OutputInfo} (start took {sw.ElapsedMilliseconds} ms)");
+            if (s.SourceKind == SourceKind.Webcam || s.Overlays.Any(o => o.Kind == OverlayKind.Webcam)) Say(rc.WebcamStatus);
             // Put some motion on screen: a topmost window that changes colour every frame.
             var flicker = Opt("motion", "1") == "1" ? ShowMotionWindow() : null;
 

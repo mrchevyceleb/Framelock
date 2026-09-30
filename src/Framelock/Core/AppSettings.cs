@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Framelock.Core;
 
-public enum SourceKind { Display, Window, Region }
+public enum SourceKind { Display, Window, Region, Webcam }
 public enum ScaleMode { Fit, Fill, Stretch }
 public enum ScaleFilter { Auto, Bilinear, Bicubic, Lanczos, Area }
 public enum RateControlMode { ConstantQuality, Cbr, Vbr }
@@ -11,7 +11,7 @@ public enum SpeedPreset { Performance, Balanced, Quality, MaxQuality }
 public enum ContainerFormat { Mp4, Mkv, Mov }
 public enum DesktopAudioMode { DefaultDevice, SpecificDevice, CapturedApp, SpecificApp, ExcludeApp }
 public enum HdrMode { Auto, Off }
-public enum OverlayKind { Image, Text }
+public enum OverlayKind { Image, Text, Webcam }
 public enum OverlayAnchor { Custom, TopLeft, TopCenter, TopRight, MiddleLeft, Center, MiddleRight, BottomLeft, BottomCenter, BottomRight }
 public enum OverlayShowMode { Always, Interval }
 public enum RecorderPriority { Normal, AboveNormal, High }
@@ -54,6 +54,16 @@ public sealed class AppSettings : ObservableObject
     private int _hdrPeakNits;
     /// <summary>0 = use the Windows "SDR content brightness" value.</summary>
     public int SdrWhiteNitsOverride { get => _hdrPeakNits; set => Set(ref _hdrPeakNits, value); }
+
+    // One camera feed can be used as the source or shared by webcam overlays.
+    private string? _webcamDeviceId;
+    public string? WebcamDeviceId { get => _webcamDeviceId; set => Set(ref _webcamDeviceId, value); }
+    private int _webcamWidth = 1280, _webcamHeight = 720, _webcamFps = 30;
+    public int WebcamWidth { get => _webcamWidth; set => Set(ref _webcamWidth, value); }
+    public int WebcamHeight { get => _webcamHeight; set => Set(ref _webcamHeight, value); }
+    public int WebcamFps { get => _webcamFps; set => Set(ref _webcamFps, value); }
+    private bool _webcamMirror;
+    public bool WebcamMirror { get => _webcamMirror; set => Set(ref _webcamMirror, value); }
 
     // ---------------- Output ----------------
     private bool _useSourceResolution;
@@ -245,7 +255,13 @@ public sealed class OverlayItem : ObservableObject
     private OverlayBitmap? _bitmap;
     [JsonIgnore] public OverlayBitmap? Bitmap { get => _bitmap; set { if (Set(ref _bitmap, value)) OnPropertyChanged(nameof(AspectRatio)); } }
     /// <summary>Content height / width.</summary>
-    [JsonIgnore] public double AspectRatio => _bitmap is { Width: > 0 } b ? (double)b.Height / b.Width : 0.25;
+    [JsonIgnore] public double AspectRatio => Kind == OverlayKind.Webcam ? WebcamAspectRatio : _bitmap is { Width: > 0 } b ? (double)b.Height / b.Width : 0.25;
+    private double _webcamAspectRatio = 9.0 / 16;
+    [JsonIgnore] public double WebcamAspectRatio
+    {
+        get => _webcamAspectRatio;
+        set { if (Set(ref _webcamAspectRatio, value)) OnPropertyChanged(nameof(AspectRatio)); }
+    }
     private string? _loadError;
     [JsonIgnore] public string? LoadError { get => _loadError; set => Set(ref _loadError, value); }
 }

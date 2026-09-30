@@ -49,7 +49,7 @@ public sealed class SettingsStore
 
     private void OverlayChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(OverlayItem.Bitmap) or nameof(OverlayItem.LoadError) or nameof(OverlayItem.AspectRatio)) return;
+        if (e.PropertyName is nameof(OverlayItem.Bitmap) or nameof(OverlayItem.LoadError) or nameof(OverlayItem.AspectRatio) or nameof(OverlayItem.WebcamAspectRatio)) return;
         ScheduleSave();
     }
 
@@ -90,6 +90,9 @@ public sealed class SettingsStore
     private static AppSettings Sanitize(AppSettings s)
     {
         s.Fps = Math.Clamp(s.Fps, 1, 240);
+        s.WebcamFps = Math.Clamp(s.WebcamFps, 1, 240);
+        s.WebcamWidth = Math.Clamp(s.WebcamWidth, 160, 3840);
+        s.WebcamHeight = Math.Clamp(s.WebcamHeight, 120, 2160);
         s.OutputWidth = Math.Clamp(s.OutputWidth & ~1, 128, 8192);
         s.OutputHeight = Math.Clamp(s.OutputHeight & ~1, 128, 8192);
         s.Quality = Math.Clamp(s.Quality, 1, 51);

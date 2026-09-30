@@ -22,6 +22,8 @@
         <ui:DurationText x:Key="Dur" />
         <ui:EnumText x:Key="EnumText" />
 
+
+
         <Style x:Key="Icon" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
             <Setter Property="FontSize" Value="16" />
@@ -43,6 +45,31 @@
         <Style x:Key="Toggle" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
             <Setter Property="Margin" Value="0,6,0,2" />
         </Style>
+        <DataTemplate x:Key="WebcamSettings">
+            <StackPanel>
+                <TextBlock Style="{StaticResource FieldLabel}" Text="Camera" />
+                <ComboBox ItemsSource="{Binding Webcams}" SelectedValuePath="Id" SelectedValue="{Binding WebcamDeviceId}"
+                          DropDownOpened="Webcams_DropDownOpened" />
+                <TextBlock Style="{StaticResource Hint}" Text="{Binding WebcamDeviceStatus}" TextWrapping="Wrap" />
+                <StackPanel IsEnabled="{Binding Rec.CanEditPipelineSettings}">
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="Camera resolution" />
+                    <ComboBox ItemsSource="{Binding WebcamResolutions}" SelectedItem="{Binding SelectedWebcamResolution}" />
+                    <StackPanel Visibility="{Binding S.SourceKind, Converter={StaticResource EqVis}, ConverterParameter=Webcam}">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Recording frame rate" />
+                        <ComboBox ItemsSource="{Binding FrameRates}" SelectedItem="{Binding S.Fps}" ItemStringFormat="{}{0} fps" />
+                    </StackPanel>
+                    <StackPanel Visibility="{Binding S.SourceKind, Converter={StaticResource EqVis}, ConverterParameter=!Webcam}">
+                        <TextBlock Style="{StaticResource FieldLabel}" Text="Webcam frame rate" />
+                        <ComboBox ItemsSource="{Binding FrameRates}" SelectedItem="{Binding S.WebcamFps}" ItemStringFormat="{}{0} fps" />
+                    </StackPanel>
+                </StackPanel>
+                <CheckBox Style="{StaticResource Toggle}" Content="Mirror webcam horizontally" IsChecked="{Binding S.WebcamMirror}" />
+                <TextBlock Style="{StaticResource Hint}" Text="{Binding Rec.WebcamStatus}" TextWrapping="Wrap" />
+                <Button Style="{StaticResource GhostButton}" Content="Reconnect webcam" HorizontalAlignment="Left" Padding="10,6"
+                        Command="{Binding ReconnectWebcamCommand}" />
+                <TextBlock Style="{StaticResource Hint}" Text="Uses the closest supported camera mode. The actual resolution and rate appear above. Microphone controls are in Audio." TextWrapping="Wrap" />
+            </StackPanel>
+        </DataTemplate>
     </Window.Resources>
 
     <Border x:Name="RootBorder" BorderBrush="{StaticResource StrokeBrush}" BorderThickness="1">
@@ -134,6 +161,10 @@
                                             <TextBlock Text="Region" />
                                         </StackPanel>
                                     </RadioButton>
+                                    <RadioButton Style="{StaticResource SegmentedRadio}" GroupName="Src" ToolTip="Record just your webcam"
+                                                 IsChecked="{Binding S.SourceKind, Converter={StaticResource EnumBool}, ConverterParameter=Webcam}">
+                                        <TextBlock Text="Webcam" />
+                                    </RadioButton>
                                 </StackPanel>
                             </Border>
 
@@ -144,6 +175,11 @@
                                       DropDownOpened="Displays_DropDownOpened" />
 
                             <!-- window picker -->
+                            <ComboBox Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                                      Visibility="{Binding S.SourceKind, Converter={StaticResource EqVis}, ConverterParameter=Webcam}"
+                                      ItemsSource="{Binding Webcams}" SelectedValuePath="Id" SelectedValue="{Binding WebcamDeviceId}"
+                                      DropDownOpened="Webcams_DropDownOpened" />
+
                             <Grid Grid.Column="1" Margin="12,0,0,0" Visibility="{Binding S.SourceKind, Converter={StaticResource EqVis}, ConverterParameter=Window}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -179,7 +215,7 @@
                             </StackPanel>
 
                             <CheckBox Grid.Column="2" Margin="12,0,4,0" VerticalAlignment="Center" Content="Cursor" ToolTip="Show the mouse cursor in the recording"
-                                      IsChecked="{Binding S.CaptureCursor}" />
+                                      IsChecked="{Binding S.CaptureCursor}" Visibility="{Binding S.SourceKind, Converter={StaticResource EqVis}, ConverterParameter=!Webcam}" />
                         </Grid>
                     </Border>
 
@@ -599,6 +635,8 @@
                         <TabItem Header="Overlays">
                             <ScrollViewer Style="{StaticResource TabScroll}">
                                 <StackPanel>
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource WebcamSettings}" Margin="0,0,0,14"
+                                                    Visibility="{Binding S.SourceKind, Converter={StaticResource EqVis}, ConverterParameter=Webcam}" />
                                     <StackPanel Orientation="Horizontal">
                                         <Button Style="{StaticResource PrimaryButton}" Padding="12,6" Command="{Binding AddImageOverlayCommand}">
                                             <StackPanel Orientation="Horizontal">
@@ -612,8 +650,9 @@
                                                 <TextBlock Text="Add text" />
                                             </StackPanel>
                                         </Button>
+                                        <Button Style="{StaticResource GhostButton}" Padding="12,6" Margin="8,0,0,0" Content="Add webcam" Command="{Binding AddWebcamOverlayCommand}" />
                                     </StackPanel>
-                                    <TextBlock Style="{StaticResource Hint}" Text="Logos, watermarks, your @handle. PNG transparency is kept. Drag them around right on the preview." />
+                                    <TextBlock Style="{StaticResource Hint}" Text="Add a webcam, logo or @handle. Drag and resize them right on the preview." />
 
                                     <Border Margin="0,14,0,0" Padding="18,22" CornerRadius="8" BorderThickness="1" BorderBrush="{StaticResource StrokeBrush}" Background="{StaticResource Bg1Brush}"
                                             Visibility="{Binding S.Overlays.Count, Converter={StaticResource EqVis}, ConverterParameter=0}">
@@ -622,7 +661,7 @@
                                             <TextBlock Margin="0,10,0,0" HorizontalAlignment="Center" FontWeight="SemiBold" Text="No overlays yet" />
                                             <TextBlock Margin="0,4,0,0" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="300"
                                                        Foreground="{StaticResource TextMutedBrush}" FontSize="12"
-                                                       Text="Add a logo or a text watermark like &quot;Follow @you&quot;. Overlays are burned into the video at full output resolution." />
+                                                       Text="Add your webcam for a picture-in-picture view, or an image or text watermark. Overlays are included in the saved video." />
                                         </StackPanel>
                                     </Border>
 
@@ -666,6 +705,10 @@
                                     <StackPanel DataContext="{Binding SelectedOverlay}" Visibility="{Binding Converter={StaticResource NullVis}}">
                                         <TextBlock Style="{StaticResource FieldLabel}" Text="Name" />
                                         <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+
+                                        <ContentControl Content="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        ContentTemplate="{StaticResource WebcamSettings}"
+                                                        Visibility="{Binding Kind, Converter={StaticResource EqVis}, ConverterParameter=Webcam}" />
 
                                         <!-- image -->
                                         <StackPanel Visibility="{Binding Kind, Converter={StaticResource EqVis}, ConverterParameter=Image}">

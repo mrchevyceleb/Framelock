@@ -44,6 +44,9 @@ public sealed class CapturePipeline : IDisposable
 
     private readonly AppSettings _settings;
     private readonly Compositor _comp;
+    private readonly WebcamTexture _webcamTexture;
+    public volatile WebcamCapture? Webcam;
+    public volatile bool WebcamOnly;
     private readonly Thread _thread;
     private readonly ConcurrentQueue<Action> _commands = new();
     private volatile bool _stop;
@@ -102,6 +105,7 @@ public sealed class CapturePipeline : IDisposable
         try
         {
             _comp = new Compositor(D3D, config.Width, config.Height);
+            _webcamTexture = new WebcamTexture(D3D);
             int pBytes = _comp.PreviewWidth * _comp.PreviewHeight * 4;
             _previewWork = new byte[pBytes];
             _previewShared = new byte[pBytes];
@@ -323,6 +327,7 @@ public sealed class CapturePipeline : IDisposable
         int previewEvery = Math.Max(1, (int)Math.Round(Config.Fps / 30.0));
         bool needPreview = PreviewEnabled && n % previewEvery == 0;
         if (!needEncode && !needPreview) return;
+        if (_webcamTexture.Update(Webcam) && WebcamOnly) _statCaptured++;
 
         // ---- compose ----
         var bgText = _settings.BackgroundColor;
@@ -332,9 +337,12 @@ public sealed class CapturePipeline : IDisposable
             var c = OverlayRenderer.ParseColor(bgText, System.Windows.Media.Colors.Black);
             _bg = new Color4(c.R / 255f, c.G / 255f, c.B / 255f, 1f);
         }
-        int sw = src?.Width ?? 0, sh = src?.Height ?? 0;
+        int sw = WebcamOnly ? _webcamTexture.Width : src?.Width ?? 0;
+        int sh = WebcamOnly ? _webcamTexture.Height : src?.Height ?? 0;
         var layout = SourceLayout.Compute(sw, sh, Config.Width, Config.Height, _settings.ScaleMode);
-        _comp.Compose(src?.HasFrame == true ? src.Srv : null, sw, sh, src?.Hdr ?? false, src?.HdrScale ?? 1f, layout, _settings.ScaleFilter, _bg, BuildOverlayDraws(n));
+        if (WebcamOnly && _settings.WebcamMirror) layout = layout with { U0 = layout.U1, U1 = layout.U0 };
+        _comp.Compose(WebcamOnly ? _webcamTexture.Srv : src?.HasFrame == true ? src.Srv : null, sw, sh,
+            !WebcamOnly && (src?.Hdr ?? false), src?.HdrScale ?? 1f, layout, _settings.ScaleFilter, _bg, BuildOverlayDraws(n));
 
         // ---- encode ----
         var enc = _encoder;
@@ -383,11 +391,18 @@ public sealed class CapturePipeline : IDisposable
         double seconds = (FrameTimeUs(n) - OverlayClockOriginUs) / 1e6;
         foreach (var o in list)
         {
-            if (o.Bitmap == null) continue;
+            bool camera = o.Kind == OverlayKind.Webcam;
+            if (camera ? _webcamTexture.Srv == null : o.Bitmap == null) continue;
             double a = OverlayLayout.GetOpacity(o, seconds);
             if (a <= 0.001) continue;
-            var r = OverlayLayout.GetRect(o, Config.Width, Config.Height);
-            _draws.Add(new OverlayDraw(o.Bitmap, (float)r.X, (float)r.Y, (float)r.Width, (float)r.Height, (float)a));
+            var state = camera ? o with { AspectRatio = (double)_webcamTexture.Height / _webcamTexture.Width } : o;
+            var r = OverlayLayout.GetRect(state, Config.Width, Config.Height);
+            _draws.Add(new OverlayDraw(o.Bitmap, (float)r.X, (float)r.Y, (float)r.Width, (float)r.Height, (float)a)
+            {
+                Texture = camera ? _webcamTexture.Srv : null,
+                TextureWidth = _webcamTexture.Width, TextureHeight = _webcamTexture.Height,
+                Mirror = camera && _settings.WebcamMirror,
+            });
         }
         return _draws;
     }
@@ -402,7 +417,8 @@ public sealed class CapturePipeline : IDisposable
         double mbps = enc != null && bytes >= _lastStatBytes ? (bytes - _lastStatBytes) * 8 / dt / 1e6 : 0;
         _lastStatBytes = bytes;
         _stats = new PipelineStats(_statFrames / dt, _statCaptured / dt, CurrentFrame, _lagged, enc?.FramesDropped ?? 0, mbps,
-            _source?.Width ?? 0, _source?.Height ?? 0, _source?.Hdr ?? false, enc != null, enc?.Info.Label)
+            WebcamOnly ? _webcamTexture.Width : _source?.Width ?? 0, WebcamOnly ? _webcamTexture.Height : _source?.Height ?? 0,
+            !WebcamOnly && (_source?.Hdr ?? false), enc != null, enc?.Info.Label)
         {
             WorkMsAvg = _statLoops > 0 ? _statWorkTicks * 1000.0 / Freq / _statLoops : 0,
             WorkMsMax = _statWorkMax * 1000.0 / Freq,
@@ -431,6 +447,7 @@ public sealed class CapturePipeline : IDisposable
         Audio.Dispose();
         foreach (var a in _audioEncoders) a.Dispose();
         _source?.Dispose();
+        _webcamTexture.Dispose();
         _comp.Dispose();
         D3D.Dispose();
         Log.Info("Pipeline stopped");

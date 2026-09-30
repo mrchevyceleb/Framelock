@@ -82,6 +82,12 @@ public static class OverlayRenderer
     {
         try
         {
+            if (item.Kind == OverlayKind.Webcam)
+            {
+                item.Bitmap = null;
+                item.LoadError = null;
+                return true;
+            }
             if (item.Kind == OverlayKind.Image)
             {
                 if (string.IsNullOrEmpty(item.ImagePath) || !File.Exists(item.ImagePath))
@@ -123,8 +129,9 @@ public static class OverlayRenderer
 public sealed record OverlayState(OverlayBitmap? Bitmap, double AspectRatio, OverlayAnchor Anchor, double X, double Y, double Width, double Margin,
                                   double Opacity, bool Visible, OverlayShowMode ShowMode, int IntervalSeconds, int DurationSeconds, bool Fade)
 {
+    public OverlayKind Kind { get; init; }
     public static OverlayState From(OverlayItem o) =>
-        new(o.Bitmap, o.AspectRatio, o.Anchor, o.X, o.Y, o.Width, o.Margin, o.Opacity, o.Visible, o.ShowMode, o.IntervalSeconds, o.DurationSeconds, o.Fade);
+        new(o.Bitmap, o.AspectRatio, o.Anchor, o.X, o.Y, o.Width, o.Margin, o.Opacity, o.Visible, o.ShowMode, o.IntervalSeconds, o.DurationSeconds, o.Fade) { Kind = o.Kind };
 }
 
 /// <summary>Pure layout math shared by the compositor and the on-preview overlay editor.</summary>

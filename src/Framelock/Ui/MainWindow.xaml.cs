@@ -260,7 +260,7 @@ public partial class MainWindow : Window
         }
         else _hud?.Hide();
 
-        bool border = rec && _s.ShowRegionBorder && _s.SourceKind != SourceKind.Display;
+        bool border = rec && _s.ShowRegionBorder && _s.SourceKind is SourceKind.Region or SourceKind.Window;
         if (border)
         {
             _border ??= new BorderWindow(CaptureScreenRect);
@@ -277,6 +277,7 @@ public partial class MainWindow : Window
         var displays = DisplayInfo.GetAll();
         switch (_s.SourceKind)
         {
+            case SourceKind.Webcam: return null;
             case SourceKind.Window when t != null && Native.IsWindow(t.Handle):
                 return _s.WindowClientOnly ? Native.GetClientScreenRect(t.Handle) : Native.GetVisibleBounds(t.Handle);
             case SourceKind.Region:
@@ -395,7 +396,7 @@ public partial class MainWindow : Window
         for (int i = _s.Overlays.Count - 1; i >= 0; i--)
         {
             var o = _s.Overlays[i];
-            if (o.Visible && o.Bitmap != null && RectOf(o).Contains(pt)) return o;
+            if (o.Visible && (o.Bitmap != null || o.Kind == OverlayKind.Webcam) && RectOf(o).Contains(pt)) return o;
         }
         return null;
     }
@@ -517,7 +518,7 @@ public partial class MainWindow : Window
     private void UpdateOverlayAdorner()
     {
         var o = _vm.SelectedOverlay;
-        bool show = o != null && o.Visible && o.Bitmap != null && _rec.Pipeline != null
+        bool show = o != null && o.Visible && (o.Bitmap != null || o.Kind == OverlayKind.Webcam) && _rec.Pipeline != null
                     && PreviewPlaceholder.Visibility != Visibility.Visible
                     && (IsOverlayTab || _drag != DragMode.None || PreviewHost.IsMouseOver);
         OverlayHint.Visibility = IsOverlayTab && _s.Overlays.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -578,6 +579,7 @@ public partial class MainWindow : Window
     private void Displays_DropDownOpened(object? sender, EventArgs e) => _vm.RefreshDisplays();
     private void Windows_DropDownOpened(object? sender, EventArgs e) => _vm.RefreshWindows();
     private void AudioDevices_DropDownOpened(object? sender, EventArgs e) => _vm.RefreshAudioDevices();
+    private async void Webcams_DropDownOpened(object? sender, EventArgs e) => await _vm.RefreshWebcamsAsync();
 
     private async void SelectRegion_Click(object sender, RoutedEventArgs e)
     {

@@ -35,6 +35,11 @@ public sealed class RecorderController : ObservableObject, IDisposable
     private bool _rebuildPending;
     private readonly List<Task> _finalizing = new();
     private CaptureTarget? _lastTarget;
+    private WebcamCapture? _webcam;
+    private WebcamConfig? _webcamConfig;
+    private readonly SemaphoreSlim _webcamGate = new(1);
+    private string _webcamStatus = "Webcam is off";
+    public string WebcamStatus { get => _webcamStatus; private set => Set(ref _webcamStatus, value); }
 
     public AppSettings Settings => _store.Settings;
     public CapturePipeline? Pipeline => _pipeline;
@@ -106,6 +111,7 @@ public sealed class RecorderController : ObservableObject, IDisposable
     {
         if (NeedPipeline) EnsurePipeline();
         else if (_pipeline != null && State == RecorderState.Idle) DisposePipeline();
+        if (DesiredWebcamConfig() != _webcamConfig) _ = SyncWebcamAsync();
     }
 
     private static readonly string[] PipelineKeys =
@@ -155,6 +161,9 @@ public sealed class RecorderController : ObservableObject, IDisposable
         {
             _replay.Seconds = Settings.ReplaySeconds;
         }
+        if (name is nameof(AppSettings.WebcamDeviceId) or nameof(AppSettings.WebcamWidth) or nameof(AppSettings.WebcamHeight)
+            or nameof(AppSettings.WebcamFps) or nameof(AppSettings.Fps) or nameof(AppSettings.SourceKind))
+            _ui.BeginInvoke(DispatcherPriority.Background, () => _ = SyncWebcamAsync());
     }
 
     /// <summary>Creates/rebuilds the pipeline so it matches the settings. Returns false when the source can't be resolved.</summary>
@@ -174,7 +183,7 @@ public sealed class RecorderController : ObservableObject, IDisposable
         var cfg = BuildConfig(target, srcSize);
         if (_pipeline != null && _pipeline.Config != cfg)
         {
-            if (State != RecorderState.Idle) _rebuildPending = true; // apply after the recording
+            if (State != RecorderState.Idle && State != RecorderState.Starting) _rebuildPending = true; // apply after the recording
             else DisposePipeline();
         }
         if (_pipeline == null)
@@ -207,6 +216,14 @@ public sealed class RecorderController : ObservableObject, IDisposable
             _lastTarget = target;
             _pipeline.SetTarget(target);
         }
+        _pipeline.WebcamOnly = Settings.SourceKind == SourceKind.Webcam;
+        _pipeline.Webcam = _webcam;
+        if (DesiredWebcamConfig() != _webcamConfig) _ = SyncWebcamAsync();
+        if (Settings.SourceKind == SourceKind.Webcam)
+        {
+            if (State == RecorderState.Idle) StatusText = _webcam?.IsReady == true ? $"Ready · {_webcam.Name}" : WebcamStatus;
+            return _webcam?.IsReady == true && !_webcam.IsStalled;
+        }
         if (target != null && State == RecorderState.Idle) StatusText = $"Ready · {target.Name}";
         return target != null;
     }
@@ -233,6 +250,8 @@ public sealed class RecorderController : ObservableObject, IDisposable
         bool hdr = s.HdrMode == HdrMode.Auto;
         switch (s.SourceKind)
         {
+            case SourceKind.Webcam:
+                return (null, (_webcam?.Width > 0 ? _webcam.Width : s.WebcamWidth, _webcam?.Height > 0 ? _webcam.Height : s.WebcamHeight));
             case SourceKind.Window:
             {
                 var win = WindowInfo.Resolve(s.WindowHandle, s.WindowExe, s.WindowTitle, s.WindowClass);
@@ -327,9 +346,69 @@ public sealed class RecorderController : ObservableObject, IDisposable
 
     public void PushOverlays()
     {
+        if (_webcam is { IsReady: true, Width: > 0, Height: > 0 } camera)
+            foreach (var o in Settings.Overlays.Where(o => o.Kind == OverlayKind.Webcam))
+                o.WebcamAspectRatio = (double)camera.Height / camera.Width;
         var p = _pipeline;
-        if (p == null) return;
-        p.Overlays = Settings.Overlays.Where(o => o.Visible && o.Bitmap != null).Select(OverlayState.From).ToArray();
+        if (p != null) p.Overlays = Settings.Overlays.Where(o => o.Visible && (o.Bitmap != null || o.Kind == OverlayKind.Webcam)).Select(OverlayState.From).ToArray();
+        if (DesiredWebcamConfig() != _webcamConfig) _ = SyncWebcamAsync();
+    }
+
+    private WebcamConfig? DesiredWebcamConfig() => !_shutDown && NeedPipeline &&
+        (Settings.SourceKind == SourceKind.Webcam || Settings.Overlays.Any(o => o.Kind == OverlayKind.Webcam && o.Visible))
+        ? new WebcamConfig(Settings.WebcamDeviceId, Settings.WebcamWidth, Settings.WebcamHeight,
+            Settings.SourceKind == SourceKind.Webcam ? Settings.Fps : Settings.WebcamFps) : null;
+
+    public async Task SyncWebcamAsync(bool retry = false)
+    {
+        await _webcamGate.WaitAsync();
+        try
+        {
+            do
+            {
+                var wanted = DesiredWebcamConfig();
+                if (wanted == _webcamConfig && (!retry || wanted == null || _webcam?.IsReady == true && !_webcam.IsStalled)) return;
+                retry = false;
+                if (_pipeline != null) _pipeline.Webcam = null;
+                _webcam?.Dispose();
+                _webcam = null;
+                _webcamConfig = wanted;
+                if (wanted == null) { WebcamStatus = "Webcam is off"; return; }
+                WebcamStatus = "Starting webcam…";
+                var camera = new WebcamCapture();
+                _webcam = camera;
+                camera.Failed += message => _ui.BeginInvoke(() =>
+                {
+                    if (_webcam != camera) return;
+                    OnWebcamLost(message);
+                });
+                try
+                {
+                    await camera.StartAsync(wanted);
+                    if (DesiredWebcamConfig() != wanted) { camera.Dispose(); continue; }
+                    if (camera.Error != null) throw new InvalidOperationException(camera.Error);
+                    string actual = $"{camera.Width}×{camera.Height} · {camera.FrameRate:0.##} fps";
+                    bool fallback = Math.Abs(camera.FrameRate - wanted.Fps) > 0.1 || camera.Width != wanted.Width || camera.Height != wanted.Height;
+                    WebcamStatus = $"{camera.Name} · {actual}" + (fallback ? $" (requested {wanted.Width}×{wanted.Height} · {wanted.Fps} fps)" : "");
+                    foreach (var o in Settings.Overlays.Where(o => o.Kind == OverlayKind.Webcam))
+                        o.WebcamAspectRatio = (double)camera.Height / camera.Width;
+                    EnsurePipeline();
+                    PushOverlays();
+                }
+                catch (Exception ex)
+                {
+                    camera.Dispose();
+                    if (_webcam == camera) _webcam = null;
+                    if (_pipeline?.Webcam == camera) _pipeline.Webcam = null;
+                    WebcamStatus = "Webcam unavailable: " + ex.Message;
+                    if (Settings.SourceKind == SourceKind.Webcam) StatusText = WebcamStatus;
+                    Log.Warn(WebcamStatus);
+                    if (IsRecording && Settings.SourceKind == SourceKind.Webcam && DesiredWebcamConfig() == wanted)
+                        OnWebcamLost(WebcamStatus);
+                }
+            } while (DesiredWebcamConfig() != _webcamConfig);
+        }
+        finally { _webcamGate.Release(); }
     }
 
     private VideoEncoderSettings CurrentEncoderSettings()
@@ -387,6 +466,13 @@ public sealed class RecorderController : ObservableObject, IDisposable
         State = RecorderState.Starting;
         try
         {
+            await SyncWebcamAsync(retry: true);
+            if (State != RecorderState.Starting) return;
+            if (DesiredWebcamConfig() != null && (_webcam?.IsReady != true || _webcam.IsStalled))
+            {
+                if (Settings.SourceKind == SourceKind.Webcam) throw new InvalidOperationException(WebcamStatus);
+                Notify?.Invoke(new Notification("Recording without webcam", WebcamStatus + " The screen recording will continue without the camera overlay.", IsError: true));
+            }
             if (!EnsurePipeline() || _pipeline == null) throw new InvalidOperationException(StatusText);
             var p = _pipeline;
             CheckDiskSpace();
@@ -400,6 +486,8 @@ public sealed class RecorderController : ObservableObject, IDisposable
             }
             else await StartEncoderAsync(p);
             if (State != RecorderState.Starting || _pipeline != p) return; // cancelled
+            if (Settings.SourceKind == SourceKind.Webcam && (_webcam?.IsReady != true || _webcam.IsStalled))
+                throw new InvalidOperationException(WebcamStatus);
 
             _splitIndex = 0;
             _finalPath = BuildPath(Settings.FileNameTemplate, ContainerExt(Settings.Container));
@@ -696,6 +784,10 @@ public sealed class RecorderController : ObservableObject, IDisposable
 
     private void OnTick()
     {
+        if (_webcam?.IsStalled == true && !WebcamStatus.StartsWith("Webcam stopped"))
+        {
+            OnWebcamLost("Webcam stopped sending frames. Reconnect it or choose another camera.");
+        }
         var p = _pipeline;
         Stats = p?.Stats;
         if (p != null && IsRecording)
@@ -714,6 +806,15 @@ public sealed class RecorderController : ObservableObject, IDisposable
         StatusText = msg;
         Notify?.Invoke(new Notification("Capture source lost", IsRecording ? msg + " - still recording (black frames)." : msg, IsError: true));
         _lastTarget = null;
+    }
+
+    private void OnWebcamLost(string message)
+    {
+        WebcamStatus = message;
+        bool stop = IsRecording && Settings.SourceKind == SourceKind.Webcam;
+        Notify?.Invoke(new Notification(stop ? "Webcam recording stopped" : "Webcam unavailable",
+            message + (stop ? " Saving the recording captured so far." : ""), IsError: true));
+        if (stop) _ = StopRecordingAsync();
     }
 
     private void OnEncoderFailed(string msg)
@@ -769,7 +870,7 @@ public sealed class RecorderController : ObservableObject, IDisposable
         catch { }
     }
 
-    public string SourceName => _lastTarget?.Name ?? Settings.SourceKind.ToString();
+    public string SourceName => Settings.SourceKind == SourceKind.Webcam ? _webcam?.Name ?? "Webcam" : _lastTarget?.Name ?? Settings.SourceKind.ToString();
     public CaptureTarget? CurrentTarget => _lastTarget;
 
     private string BuildPath(string template, string ext, string? subfolder = null)
@@ -860,6 +961,8 @@ public sealed class RecorderController : ObservableObject, IDisposable
         _tick.Stop();
         FinishRecordingBlocking();
         DisposePipeline();
+        _webcam?.Dispose();
+        _webcam = null;
     }
 
     public void Dispose() => Shutdown();

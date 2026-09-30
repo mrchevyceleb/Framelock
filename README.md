@@ -6,6 +6,8 @@ Frame-exact screen and gameplay recorder for Windows 10 (2004+) / 11.
 - Output is locked to an exact size (4K, 1440p, 1080p, Shorts, or a custom size) with Fit, Fill or Stretch scaling.
 - Uses the NVENC, AMD AMF or Quick Sync hardware encoders when they are available, and falls back to x264, x265 or SVT-AV1.
 - Image and text overlays (logos, your @handle) that you drag into place on the live preview.
+- Choose **Webcam** in the source bar to record only your camera, with a selectable recording frame rate. Camera selection, resolution and mirroring are in **Overlays**.
+- Choose **Add webcam** in **Overlays** to add a movable, resizable camera view to a display, window or region recording. Its capture frame rate is independent of the screen recording rate. The actual camera mode is shown when the requested resolution or rate is unavailable; output keeps the selected recording frame rate by repeating camera frames when needed.
 - Records desktop or game audio and your microphone, with separate tracks, a noise gate, push-to-talk and a sync offset.
 - Instant replay buffer, markers that become chapters in the file (plus a YouTube chapter list), pause, and file splitting.
 - Crash-safe recording: it writes MKV while recording, then remuxes to MP4.
@@ -25,6 +27,7 @@ This needs the .NET 10 SDK. The published folder is self-contained, so you can c
 ## Dev aids
 
 - `Framelock.exe --selftest seconds=6 fps=120 w=3840 h=2160 encoder=auto pause=1 replay=1` runs a headless end-to-end recording and writes a report to `%APPDATA%\Framelock\logs\selftest.txt`. Add `gpuload=2400` to run it while a separate process keeps the GPU at 100% like a game (more iterations = a slower game), and `motion=0` to skip the small moving test window.
+- Add `source=webcam fps=30` for a webcam-only selftest, or `webcam=1 camfps=30` for a screen recording with a webcam overlay. `fps` sets the recording rate; `camfps` only sets the overlay capture rate. Optional `camw=1280 camh=720 mirror=1 camera=<device-id>` selects the camera mode, mirroring and device.
 - `Framelock.exe --uishot=<folder>` renders every settings tab to a PNG.
 - `Framelock.exe --regionshot=<file.png>` renders the region picker's toolbar to a PNG without opening the full-screen picker.
 - `Framelock.exe --remixcheck=<video>` runs Fix audio on a copy of a recording, checks the new mix against the separate tracks, and writes `%APPDATA%\Framelock\logs\remixcheck.txt`.

@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Framelock.Audio;
+using Framelock.Capture;
 using Framelock.Core;
 using Framelock.Encoding;
 using Framelock.Engine;
@@ -27,6 +28,14 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<AudioDevice> RenderDevices { get; } = new();
     public ObservableCollection<AudioDevice> CaptureDevices { get; } = new();
     public ObservableCollection<string> AudioApps { get; } = new();
+    public ObservableCollection<WebcamDevice> Webcams { get; } = new();
+    public ResolutionPreset[] WebcamResolutions { get; } =
+    {
+        new("720p", 1280, 720, "16:9"), new("1080p", 1920, 1080, "16:9"),
+        new("4K", 3840, 2160, "16:9"), new("480p", 640, 480, "4:3"),
+    };
+    private string _webcamDeviceStatus = "Looking for cameras…";
+    public string WebcamDeviceStatus { get => _webcamDeviceStatus; private set => Set(ref _webcamDeviceStatus, value); }
 
     public ResolutionPreset[] Resolutions => Presets.Resolutions;
     public int[] FrameRates => Presets.FrameRates;
@@ -52,6 +61,7 @@ public sealed class MainViewModel : ObservableObject
         RefreshWindows();
         RefreshAudioDevices();
         RefreshEncoders();
+        _ = RefreshWebcamsAsync();
         EncoderCatalog.ProbeCompleted += () => Application.Current.Dispatcher.BeginInvoke(RefreshEncoders);
         S.PropertyChanged += OnSettingChanged;
         S.Overlays.CollectionChanged += (_, e) =>
@@ -82,6 +92,8 @@ public sealed class MainViewModel : ObservableObject
         OpenFolderCommand = new RelayCommand(() => OpenFolder(S.OutputFolder));
         AddImageOverlayCommand = new RelayCommand(AddImageOverlay);
         AddTextOverlayCommand = new RelayCommand(AddTextOverlay);
+        AddWebcamOverlayCommand = new RelayCommand(AddWebcamOverlay);
+        ReconnectWebcamCommand = new RelayCommand(() => _ = Rec.SyncWebcamAsync(retry: true), () => !Rec.IsBusy);
         RemoveOverlayCommand = new RelayCommand(RemoveOverlay, () => SelectedOverlay != null);
         DuplicateOverlayCommand = new RelayCommand(DuplicateOverlay, () => SelectedOverlay != null);
         MoveOverlayUpCommand = new RelayCommand(() => MoveOverlay(-1), () => SelectedOverlay != null);
@@ -130,6 +142,8 @@ public sealed class MainViewModel : ObservableObject
     public ICommand OpenFolderCommand { get; }
     public ICommand AddImageOverlayCommand { get; }
     public ICommand AddTextOverlayCommand { get; }
+    public ICommand AddWebcamOverlayCommand { get; }
+    public ICommand ReconnectWebcamCommand { get; }
     public ICommand RemoveOverlayCommand { get; }
     public ICommand DuplicateOverlayCommand { get; }
     public ICommand MoveOverlayUpCommand { get; }
@@ -140,6 +154,55 @@ public sealed class MainViewModel : ObservableObject
     public ICommand UseSuggestedBitrateCommand { get; }
 
     // ================================================================== source
+
+    private bool _refreshingWebcams;
+    public async Task RefreshWebcamsAsync()
+    {
+        if (_refreshingWebcams) return;
+        _refreshingWebcams = true;
+        try
+        {
+            var devices = await WebcamCapture.GetDevicesAsync();
+            // Keep a saved, unplugged camera selected; never silently record a different camera.
+            var available = devices.ToList();
+            if (!string.IsNullOrEmpty(S.WebcamDeviceId) && devices.All(d => d.Id != S.WebcamDeviceId))
+                available.Add(new WebcamDevice(S.WebcamDeviceId, "Saved camera (disconnected)"));
+            // Retain existing items so open camera pickers keep their selection throughout refresh.
+            for (int i = Webcams.Count - 1; i >= 0; i--)
+                if (available.All(d => d.Id != Webcams[i].Id)) Webcams.RemoveAt(i);
+            foreach (var device in available)
+                if (Webcams.All(d => d.Id != device.Id)) Webcams.Add(device);
+            if (S.WebcamDeviceId == null) S.WebcamDeviceId = devices.FirstOrDefault()?.Id;
+            WebcamDeviceStatus = devices.Length == 0 ? "No webcam found. Connect one, then reopen the camera list." : "Choose your camera below.";
+            OnPropertyChanged(nameof(WebcamDeviceId));
+            OnPropertyChanged(nameof(SourceSummary));
+        }
+        catch (Exception ex) { WebcamDeviceStatus = "Couldn't list cameras: " + ex.Message; }
+        finally { _refreshingWebcams = false; }
+    }
+
+    public string? WebcamDeviceId
+    {
+        get => S.WebcamDeviceId;
+        set
+        {
+            // ComboBox temporarily clears its selection as the device list is refreshed.
+            if (_refreshingWebcams || string.IsNullOrEmpty(value)) return;
+            S.WebcamDeviceId = value;
+        }
+    }
+
+    public ResolutionPreset SelectedWebcamResolution
+    {
+        get => WebcamResolutions.FirstOrDefault(r => r.Width == S.WebcamWidth && r.Height == S.WebcamHeight) ?? WebcamResolutions[0];
+        set
+        {
+            if (value == null) return;
+            S.WebcamWidth = value.Width;
+            S.WebcamHeight = value.Height;
+            OnPropertyChanged();
+        }
+    }
 
     public void RefreshDisplays()
     {
@@ -182,6 +245,7 @@ public sealed class MainViewModel : ObservableObject
     {
         SourceKind.Window => _selectedWindow?.Title ?? S.WindowTitle ?? "No window selected",
         SourceKind.Region => $"{S.RegionWidth}×{S.RegionHeight} at {S.RegionX},{S.RegionY}",
+        SourceKind.Webcam => Webcams.FirstOrDefault(c => c.Id == S.WebcamDeviceId)?.Name ?? "Webcam",
         _ => Displays.FirstOrDefault(d => d.DeviceName == S.DisplayId)?.Label ?? "Display",
     };
 
@@ -390,7 +454,7 @@ public sealed class MainViewModel : ObservableObject
     private void OnOverlayChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (sender is not OverlayItem o) return;
-        if (e.PropertyName is nameof(OverlayItem.LoadError) or nameof(OverlayItem.AspectRatio)) return;
+        if (e.PropertyName is nameof(OverlayItem.LoadError) or nameof(OverlayItem.AspectRatio) or nameof(OverlayItem.WebcamAspectRatio)) return;
         if (e.PropertyName != null && TextRenderProps.Contains(e.PropertyName))
         {
             // Re-render on the next idle tick so fast typing doesn't render every keystroke twice.
@@ -426,6 +490,17 @@ public sealed class MainViewModel : ObservableObject
     {
         var o = new OverlayItem { Kind = OverlayKind.Text, Name = "Handle", Text = "@yourhandle", Anchor = OverlayAnchor.BottomLeft, Width = 0.16 };
         OverlayRenderer.Refresh(o);
+        S.Overlays.Add(o);
+        SelectedOverlay = o;
+    }
+
+    private void AddWebcamOverlay()
+    {
+        var o = new OverlayItem
+        {
+            Kind = OverlayKind.Webcam, Name = "Webcam", Anchor = OverlayAnchor.BottomRight, Width = 0.22,
+            WebcamAspectRatio = (double)S.WebcamHeight / Math.Max(1, S.WebcamWidth),
+        };
         S.Overlays.Add(o);
         SelectedOverlay = o;
     }
@@ -500,8 +575,12 @@ public sealed class MainViewModel : ObservableObject
             case nameof(AppSettings.Quality): OnPropertyChanged(nameof(QualityLabel)); break;
             case nameof(AppSettings.OutputFolder): Recordings.RefreshIfLoaded(S.OutputFolder); break;
             case nameof(AppSettings.SourceKind) or nameof(AppSettings.DisplayId) or nameof(AppSettings.WindowTitle)
-                or nameof(AppSettings.RegionX) or nameof(AppSettings.RegionY) or nameof(AppSettings.RegionWidth) or nameof(AppSettings.RegionHeight):
-                OnPropertyChanged(nameof(SourceSummary)); break;
+                or nameof(AppSettings.RegionX) or nameof(AppSettings.RegionY) or nameof(AppSettings.RegionWidth) or nameof(AppSettings.RegionHeight)
+                or nameof(AppSettings.WebcamDeviceId):
+                OnPropertyChanged(nameof(SourceSummary));
+                OnPropertyChanged(nameof(WebcamDeviceId)); break;
+            case nameof(AppSettings.WebcamWidth) or nameof(AppSettings.WebcamHeight):
+                OnPropertyChanged(nameof(SelectedWebcamResolution)); break;
             case nameof(AppSettings.OutputWidth) or nameof(AppSettings.OutputHeight) or nameof(AppSettings.UseSourceResolution) or nameof(AppSettings.Fps):
                 OnPropertyChanged(nameof(SelectedResolution));
                 OnPropertyChanged(nameof(IsCustomResolution));
