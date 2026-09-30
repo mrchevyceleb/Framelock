@@ -340,6 +340,10 @@ public sealed class Compositor : IDisposable
         _ctx.CopyResource(_previewStaging[slot], _previewRt);
         _previewStagingSerial[slot] = ++_previewSerial;
 
+        // Submit each preview batch explicitly: nonblocking readback must advance even when
+        // recording is idle or the encoder stops submitting work. Flush does not wait for the GPU.
+        _ctx.Flush();
+
         // Read the slot written two calls ago - normally the GPU is done with it. When a game holds the GPU it may not be:
         // then skip this preview rather than make capture wait.
         int readSlot = (int)(_previewSerial % _previewStaging.Length);

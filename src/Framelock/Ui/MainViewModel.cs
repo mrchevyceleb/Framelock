@@ -427,7 +427,7 @@ public sealed class MainViewModel : ObservableObject
         {
             var st = Rec.Stats;
             if (st == null) return "";
-            var parts = new List<string> { $"{st.OutputFps:F0} fps" };
+            var parts = new List<string> { $"{(st.Encoding ? "Output" : "Preview")} {st.OutputFps:F0} fps" };
             if (st.Encoding) parts.Add($"{st.VideoMbps:F0} Mbps");
             if (st.Lagged > 0 || st.EncoderDropped > 0) parts.Add($"{st.Lagged + st.EncoderDropped} skipped");
             if (st.Hdr) parts.Add("HDR→SDR");
