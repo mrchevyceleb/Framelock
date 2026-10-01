@@ -1,0 +1,70 @@
+name: Windows release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-releases
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Require a newer stable version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $versionText = $env:GITHUB_REF_NAME.Substring(1)
+          if ($versionText -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a stable vMAJOR.MINOR.PATCH tag.' }
+          $previous = gh release list --repo "$env:GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName | ConvertFrom-Json
+          if ($LASTEXITCODE) { throw 'Could not check existing releases.' }
+          foreach ($release in $previous) {
+            if ($release.tagName -match '^v(\d+\.\d+\.\d+)$' -and [version]$Matches[1] -ge [version]$versionText) {
+              throw "Release $versionText must be newer than $($release.tagName)."
+            }
+          }
+      - name: Restore pinned FFmpeg runtime from the previous release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force .dev, third_party/ffmpeg | Out-Null
+          gh release download --repo "$env:GITHUB_REPOSITORY" --pattern FFmpeg-runtime-win-x64.zip --dir .dev
+          $valid = $LASTEXITCODE -eq 0
+          $files = @()
+          if ($valid) {
+            Expand-Archive .dev/FFmpeg-runtime-win-x64.zip .dev/previous-ffmpeg -Force
+            foreach ($line in Get-Content third_party/ffmpeg/SHA256SUMS.txt) {
+              if ($line -notmatch '^([a-f0-9]{64})  ([^/\\]+)$') { throw 'Invalid FFmpeg checksum manifest.' }
+              $expected = $Matches[1]; $path = Join-Path '.dev/previous-ffmpeg' $Matches[2]
+              if (!(Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { $valid = $false; break }
+              $files += $path
+            }
+          }
+          if ($valid) { Copy-Item -LiteralPath $files -Destination third_party/ffmpeg -Force }
+          else { ./tools/get-ffmpeg.ps1 }
+      - name: Build installer and update packages
+        id: package
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          ./tools/package-release.ps1 -Version $version
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DIR: ${{ steps.package.outputs.release_dir }}
+        run: |
+          $assets = Get-ChildItem -LiteralPath $env:RELEASE_DIR -File | ForEach-Object FullName
+          gh release create "$env:GITHUB_REF_NAME" @assets --verify-tag --title "Framelock $($env:GITHUB_REF_NAME)" --generate-notes --latest
+          if ($LASTEXITCODE) { throw 'Release publication failed.' }

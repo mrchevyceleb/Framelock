@@ -2,6 +2,14 @@
 
 Frame-exact screen and gameplay recorder for Windows 10 (2004+) / 11.
 
+## Download
+
+Download **Framelock-win-Setup.exe** from the [latest GitHub release](https://github.com/mrchevyceleb/Framelock/releases/latest) and run it. The installer includes .NET and FFmpeg; no separate runtime installation is needed. A portable ZIP is also available.
+
+Installed and packaged portable copies check for updates at startup and every six hours. Updates download in the background and install when you next open Framelock. A running recording is never restarted for an update. **General → Check for updates** checks immediately.
+
+## Features
+
 - Record a display, a single window, or any region at up to 120 fps. The region picker has exact-pixel boxes (4K 3840×2160, 1440p, 1080p, 720p, Shorts), and the video matches the box, so nothing is scaled.
 - Output is locked to an exact size (4K, 1440p, 1080p, Shorts, or a custom size) with Fit, Fill or Stretch scaling.
 - Uses the NVENC, AMD AMF or Quick Sync hardware encoders when they are available, and falls back to x264, x265 or SVT-AV1.
@@ -34,3 +42,11 @@ This needs the .NET 10 SDK. The published folder is self-contained, so you can c
 - `Framelock.exe --tray` starts hidden in the tray. This is the mode used by "Start with Windows".
 
 Settings and logs are stored in `%APPDATA%\Framelock`.
+
+## Releases
+
+`tools/package-release.ps1 -Version 1.1.0` builds an installer, portable ZIP and update feed in an isolated `.dev/release-build` folder. The pinned Velopack tool is restored automatically. Push a version tag such as `v1.2.0` to build and publish the next release through GitHub Actions. Use stable `vMAJOR.MINOR.PATCH` tags. The workflow reuses the pinned FFmpeg runtime from the preceding release so upstream daily-build expiry does not break release builds.
+
+## License
+
+Framelock is open source under [GPL-3.0-or-later](LICENSE.txt). Bundled components keep their own licenses; see [third-party notices](THIRD-PARTY-NOTICES.md). FFmpeg source and build-script archives accompany each release.

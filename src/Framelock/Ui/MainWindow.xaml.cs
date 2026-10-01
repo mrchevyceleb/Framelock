@@ -639,6 +639,7 @@ public partial class MainWindow : Window
 
     private void OpenLogs_Click(object sender, RoutedEventArgs e) => MainViewModel.OpenFolder(Paths.Logs);
     private void OpenOverlayFolder_Click(object sender, RoutedEventArgs e) => MainViewModel.OpenFolder(Paths.OverlayLibrary);
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e) => await App.Updates.CheckAsync();
 
     private void Autostart_Click(object sender, RoutedEventArgs e)
     {

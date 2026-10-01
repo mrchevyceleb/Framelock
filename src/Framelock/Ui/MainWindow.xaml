@@ -996,6 +996,13 @@
                                         <Button Style="{StaticResource GhostButton}" Padding="10,6" Margin="8,0,0,0" Content="Overlay images" Click="OpenOverlayFolder_Click" />
                                     </StackPanel>
                                     <TextBlock Style="{StaticResource Hint}" Margin="0,14,0,0" x:Name="AboutText" />
+                                    <TextBlock Style="{StaticResource SectionHeader}" Text="UPDATES" />
+                                    <TextBlock Style="{StaticResource Hint}" Text="{Binding Updates.StatusText}" />
+                                    <Button Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Padding="10,6" Content="Check for updates" Click="CheckUpdates_Click">
+                                        <Button.IsEnabled>
+                                            <Binding Path="Updates.IsChecking" Converter="{StaticResource Not}" />
+                                        </Button.IsEnabled>
+                                    </Button>
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>

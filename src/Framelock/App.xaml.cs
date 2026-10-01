@@ -6,6 +6,7 @@ using Framelock.Core;
 using Framelock.Encoding;
 using Framelock.Engine;
 using Framelock.Graphics;
+using Velopack;
 
 namespace Framelock;
 
@@ -18,6 +19,18 @@ public partial class App : Application
 
     public static SettingsStore Store { get; private set; } = null!;
     public static RecorderController Recorder { get; private set; } = null!;
+    public static UpdateService Updates { get; private set; } = null!;
+
+    [STAThread]
+    public static void Main()
+    {
+        // Hooks must run before WPF and the single-instance check. Apply pending updates only
+        // after acquiring our mutex below, so launching a second copy cannot stop a recording.
+        VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
+        var app = new App();
+        app.InitializeComponent();
+        app.Run();
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -79,6 +92,8 @@ public partial class App : Application
             Shutdown();
             return;
         }
+        Updates = new UpdateService();
+        Updates.ApplyPendingAtStartup(e.Args, MutexName);
         _activate = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateEventName);
         new Thread(() =>
         {
@@ -114,6 +129,7 @@ public partial class App : Application
         else win.Show();
         if (e.Args.FirstOrDefault(a => a.StartsWith("--uishot=")) is { } shot)
             _ = win.SaveUiShotsAsync(shot["--uishot=".Length..]);
+        else _ = Updates.RunAsync();
     }
 
     public static void ShowError(string message)
@@ -123,6 +139,7 @@ public partial class App : Application
 
     public void Quit()
     {
+        Updates?.Stop();
         try { Recorder?.Shutdown(); } catch (Exception ex) { Log.Error("Shutdown failed", ex); }
         try { Store?.SaveNow(); } catch { }
         Log.Shutdown();
@@ -140,6 +157,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        Updates?.Stop();
         // Any exit path (not just Quit) must finalize an active recording. Shutdown is idempotent.
         try { Recorder?.Shutdown(); } catch (Exception ex) { Log.Error("Shutdown on exit failed", ex); }
         Ui.RemixWindow.CancelAllExports();

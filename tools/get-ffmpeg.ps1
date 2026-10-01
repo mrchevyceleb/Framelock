@@ -9,18 +9,22 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $dest = Join-Path $PSScriptRoot '..\third_party\ffmpeg'
-$tmp  = Join-Path ([IO.Path]::GetTempPath()) 'framelock-ffmpeg'
-Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$tmp = [IO.Path]::GetFullPath((Join-Path $tempRoot ('framelock-ffmpeg-' + [Guid]::NewGuid().ToString('N'))))
+if (!$tmp.StartsWith($tempRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'FFmpeg temporary directory is outside the expected workspace.'
+}
 New-Item -ItemType Directory -Force $tmp, $dest | Out-Null
+try {
 Write-Host "Downloading $Url"
 Invoke-WebRequest $Url -OutFile "$tmp\ffmpeg.zip"
 $actual = (Get-FileHash "$tmp\ffmpeg.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -ne $Sha256.ToLowerInvariant()) {
-    Remove-Item $tmp -Recurse -Force
     throw "SHA-256 mismatch for the FFmpeg download (expected $Sha256, got $actual). Not installing it."
 }
 Expand-Archive "$tmp\ffmpeg.zip" $tmp
 $root = Get-ChildItem $tmp -Directory | Select-Object -First 1
 Copy-Item "$($root.FullName)\bin\*.dll", "$($root.FullName)\bin\ffprobe.exe", "$($root.FullName)\LICENSE.txt" $dest -Force
-Remove-Item $tmp -Recurse -Force
 Write-Host "FFmpeg installed to $((Resolve-Path $dest).Path)"
+}
+finally { Remove-Item -LiteralPath $tmp -Recurse -Force }

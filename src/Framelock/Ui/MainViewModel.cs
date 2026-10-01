@@ -21,6 +21,7 @@ public sealed class MainViewModel : ObservableObject
 {
     public AppSettings S { get; }
     public RecorderController Rec { get; }
+    public UpdateService Updates => App.Updates;
 
     public ObservableCollection<DisplayInfo> Displays { get; } = new();
     public ObservableCollection<WindowInfo> Windows { get; } = new();
