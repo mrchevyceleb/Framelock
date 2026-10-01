@@ -53,6 +53,8 @@ jobs:
           }
           if ($valid) { Copy-Item -LiteralPath $files -Destination third_party/ffmpeg -Force }
           else { ./tools/get-ffmpeg.ps1 }
+          # The optional download can fail on the first release; its fallback succeeded.
+          $global:LASTEXITCODE = 0
       - name: Build installer and update packages
         id: package
         shell: pwsh

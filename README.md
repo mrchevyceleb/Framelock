@@ -45,7 +45,7 @@ Settings and logs are stored in `%APPDATA%\Framelock`.
 
 ## Releases
 
-`tools/package-release.ps1 -Version 1.1.0` builds an installer, portable ZIP and update feed in an isolated `.dev/release-build` folder. The pinned Velopack tool is restored automatically. Push a version tag such as `v1.2.0` to build and publish the next release through GitHub Actions. Use stable `vMAJOR.MINOR.PATCH` tags. The workflow reuses the pinned FFmpeg runtime from the preceding release so upstream daily-build expiry does not break release builds.
+`tools/package-release.ps1 -Version 1.1.1` builds an installer, portable ZIP and update feed in an isolated `.dev/release-build` folder. The pinned Velopack tool is restored automatically. Push a version tag such as `v1.2.0` to build and publish the next release through GitHub Actions. Use stable `vMAJOR.MINOR.PATCH` tags. The workflow reuses the pinned FFmpeg runtime from the preceding release so upstream daily-build expiry does not break release builds.
 
 ## License
 
