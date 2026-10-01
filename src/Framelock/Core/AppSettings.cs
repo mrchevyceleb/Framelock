@@ -167,7 +167,15 @@ public sealed class AppSettings : ObservableObject
 
     // ---------------- General ----------------
     private string _outputFolder = Paths.DefaultOutputFolder;
-    public string OutputFolder { get => _outputFolder; set => Set(ref _outputFolder, value); }
+    public string OutputFolder
+    {
+        get => _outputFolder;
+        set
+        {
+            string folder = value?.Trim().Trim('"').Trim() ?? "";
+            Set(ref _outputFolder, string.IsNullOrWhiteSpace(folder) ? Paths.DefaultOutputFolder : folder);
+        }
+    }
     private string _fileNameTemplate = "{source} {date} {time}";
     public string FileNameTemplate { get => _fileNameTemplate; set => Set(ref _fileNameTemplate, value); }
     private int _countdown = 3;

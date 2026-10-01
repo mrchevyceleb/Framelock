@@ -12,7 +12,7 @@ namespace Framelock.Engine;
 
 public enum RecorderState { Idle, Starting, Recording, Paused, Finalizing }
 
-public sealed record Notification(string Title, string Message, string? FilePath = null, bool IsError = false);
+public sealed record Notification(string Title, string Message, string? FilePath = null, bool IsError = false, bool RequiresAcknowledgement = false);
 
 /// <summary>
 /// Owns the capture pipeline and the recording state machine (record / pause / stop / split / replay / screenshots / markers).
@@ -476,6 +476,8 @@ public sealed class RecorderController : ObservableObject, IDisposable
             if (!EnsurePipeline() || _pipeline == null) throw new InvalidOperationException(StatusText);
             var p = _pipeline;
             CheckDiskSpace();
+            // Validate the destination before showing a countdown or warming the encoder.
+            _finalPath = BuildPath(Settings.FileNameTemplate, ContainerExt(Settings.Container));
 
             if (Settings.CountdownSeconds > 0)
             {
@@ -490,7 +492,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
                 throw new InvalidOperationException(WebcamStatus);
 
             _splitIndex = 0;
-            _finalPath = BuildPath(Settings.FileNameTemplate, ContainerExt(Settings.Container));
             // The sink listens before the keyframe is asked for: a slow file open must not miss it (and then wait for the
             // next scheduled keyframe, which cut up to 2 s from the start).
             long t = p.NowUs;
@@ -512,7 +513,7 @@ public sealed class RecorderController : ObservableObject, IDisposable
             Log.Error("Could not start recording", ex);
             State = RecorderState.Idle;
             StatusText = "Recording failed: " + ex.Message;
-            Notify?.Invoke(new Notification("Couldn't start recording", ex.Message, IsError: true));
+            Notify?.Invoke(new Notification("Recording did not start", "No video is being saved.\n\n" + ex.Message, IsError: true, RequiresAcknowledgement: true));
             _ = StopEncoderIfUnused();
         }
     }
@@ -860,10 +861,15 @@ public sealed class RecorderController : ObservableObject, IDisposable
 
     private void CheckDiskSpace()
     {
+        Settings.OutputFolder = Path.GetFullPath(Settings.OutputFolder);
+        Directory.CreateDirectory(Settings.OutputFolder);
+        // Creating a directory alone doesn't prove that a recording file can be written there.
+        using (var probe = new FileStream(Path.Combine(Settings.OutputFolder, ".framelock-write-" + Guid.NewGuid().ToString("N")),
+            FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose))
+            probe.WriteByte(0);
         try
         {
-            Directory.CreateDirectory(Settings.OutputFolder);
-            var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Settings.OutputFolder))!);
+            var drive = new DriveInfo(Path.GetPathRoot(Settings.OutputFolder)!);
             if (drive.AvailableFreeSpace < 2L * 1024 * 1024 * 1024)
                 Notify?.Invoke(new Notification("Low disk space", $"Only {FormatBytes(drive.AvailableFreeSpace)} free on {drive.Name}", IsError: true));
         }

@@ -46,7 +46,15 @@ public partial class MainWindow : Window
         SourceInitialized += OnSourceInitialized;
         StateChanged += (_, _) => { OnWindowStateChanged(); SyncVisibility(); };
         IsVisibleChanged += (_, _) => SyncVisibility();
-        _rec.Notify += n => Toast.Show(n);
+        _rec.Notify += n =>
+        {
+            Toast.Show(n);
+            if (n.RequiresAcknowledgement)
+            {
+                BringToFront();
+                MessageBox.Show(this, n.Message, n.Title, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        };
         _rec.CountdownRequested += secs => CountdownWindow.ShowOn(CaptureScreenRect(), secs);
         _rec.PipelineChanged += () => { _vm.OnPipelineChanged(); _previewBmp = null; };
         _rec.PropertyChanged += OnRecorderChanged;
