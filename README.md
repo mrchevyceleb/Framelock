@@ -21,6 +21,7 @@ Installed and packaged portable copies check for updates at startup and every si
 - Crash-safe recording: it writes MKV while recording, then remuxes to MP4.
 - A Recordings tab lists your videos with thumbnails. **Fix audio** rebalances game and mic volume after recording: you hear the new balance live, then save it as a new file or replace the original. The video is copied untouched and only the mix track is rebuilt, so there is no quality loss.
 - Global hotkeys, a tray icon and a floating HUD. Framelock keeps its own windows out of your recordings.
+- Silent recording controls: start, stop, pause, resume, markers, replay saves and screenshots produce no sound effects.
 
 ## Build
 

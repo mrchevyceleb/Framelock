@@ -93,7 +93,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
         _tick.Tick += (_, _) => OnTick();
         _tick.Start();
         Settings.PropertyChanged += (_, e) => OnSettingChanged(e.PropertyName);
-        SoundFx.Enabled = Settings.PlaySounds;
     }
 
     // ================================================================== pipeline lifecycle
@@ -139,7 +138,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
     private void OnSettingChanged(string? name)
     {
         if (name == null) return;
-        if (name == nameof(AppSettings.PlaySounds)) SoundFx.Enabled = Settings.PlaySounds;
         if (PipelineKeys.Contains(name) || SourceKeys.Contains(name))
         {
             // Source switches apply live (even while recording); size/fps/encoder changes rebuild when idle.
@@ -505,7 +503,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
             State = RecorderState.Recording;
             StatusText = "Recording";
             ApplyRecordingPriority(true);
-            SoundFx.Start();
             Log.Info($"Recording started → {_sink.Path}");
         }
         catch (Exception ex)
@@ -545,7 +542,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
         {
             _sink = null;
             State = RecorderState.Finalizing;
-            SoundFx.Stop();
             ApplyRecordingPriority(false);
         }
         try { await FinishFileAsync(finalPath, crashSafe, container, r); }
@@ -608,7 +604,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
             _pauseStartUs = t;
             State = RecorderState.Paused;
             StatusText = "Paused";
-            SoundFx.Tick();
         }
         else if (State == RecorderState.Paused)
         {
@@ -617,7 +612,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
             _pausedUs += t - _pauseStartUs;
             State = RecorderState.Recording;
             StatusText = "Recording";
-            SoundFx.Tick();
         }
     }
 
@@ -647,7 +641,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
         _sink = null;
         State = RecorderState.Finalizing;
         StatusText = "Finishing…";
-        SoundFx.Stop();
         ApplyRecordingPriority(false);
         try
         {
@@ -697,7 +690,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
         // While paused the file is frozen at the pause point; the live clock would land past the end of the file.
         _sink.AddMarker(State == RecorderState.Paused ? _pauseStartUs : p.NowUs, label);
         Notify?.Invoke(new Notification("Marker added", $"{label} at {FormatDuration(Elapsed)}"));
-        SoundFx.Tick();
     }
 
     // ================================================================== replay buffer
@@ -743,7 +735,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
             return;
         }
         var path = BuildPath("Replay {source} {date} {time}", ".mp4");
-        SoundFx.Shot();
         var r = await _replay.SaveAsync(path);
         Notify?.Invoke(r.Success
             ? new Notification("Replay saved", $"{Path.GetFileName(path)} · {FormatDuration(TimeSpan.FromMicroseconds(r.DurationUs))}", path)
@@ -766,7 +757,6 @@ public sealed class RecorderController : ObservableObject, IDisposable
             var p = _pipeline ?? throw new InvalidOperationException("Capture isn't running");
             var path = BuildPath("Screenshot {source} {date} {time}", ".png", "Screenshots");
             await p.TakeScreenshotAsync(path);
-            SoundFx.Shot();
             Notify?.Invoke(new Notification("Screenshot saved", Path.GetFileName(path), path));
         }
         catch (Exception ex)

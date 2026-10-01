@@ -190,8 +190,6 @@ public sealed class AppSettings : ObservableObject
     public bool MinimizeWhileRecording { get => _minimizeOnRecord; set => Set(ref _minimizeOnRecord, value); }
     private bool _closeToTray = true;
     public bool CloseToTray { get => _closeToTray; set => Set(ref _closeToTray, value); }
-    private bool _playSounds = true;
-    public bool PlaySounds { get => _playSounds; set => Set(ref _playSounds, value); }
     private RecorderPriority _priority = RecorderPriority.AboveNormal;
     public RecorderPriority Priority { get => _priority; set => Set(ref _priority, value); }
     private bool _previewWhileRecording = true;

@@ -36,7 +36,6 @@ public static class SelfTest
             {
                 OutputFolder = outDir,
                 CountdownSeconds = 0,
-                PlaySounds = false,
                 Fps = int.Parse(Opt("fps", "60")),
                 OutputWidth = int.Parse(Opt("w", "1920")),
                 OutputHeight = int.Parse(Opt("h", "1080")),
