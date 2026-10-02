@@ -621,8 +621,8 @@
 
                                     <TextBlock Style="{StaticResource SectionHeader}" Margin="0,18,0,6" Text="TRACKS" />
                                     <StackPanel IsEnabled="{Binding Rec.CanEditPipelineSettings}">
-                                        <CheckBox Style="{StaticResource Toggle}" Content="Separate tracks (mix · game · mic)" IsChecked="{Binding S.SeparateAudioTracks}" />
-                                        <TextBlock Style="{StaticResource Hint}" Text="Track 1 is the full mix (what YouTube plays). Tracks 2 and 3 let you fix levels in your editor later." />
+                                        <CheckBox Style="{StaticResource Toggle}" Content="Keep separate game and mic audio for editing" IsChecked="{Binding S.SeparateAudioTracks}" />
+                                        <TextBlock Style="{StaticResource Hint}" Text="Videos always play game and mic together. Editing audio is saved in a companion file beside the video; keep it for Fix audio." TextWrapping="Wrap" />
                                         <TextBlock Style="{StaticResource FieldLabel}" Text="Audio quality (AAC)" />
                                         <ComboBox ItemsSource="{Binding AudioBitrates}" SelectedItem="{Binding S.AudioBitrateKbps}" ItemStringFormat="{}{0} kbps" />
                                     </StackPanel>
@@ -1039,6 +1039,7 @@
                                                     <ContextMenu DataContext="{Binding PlacementTarget.Tag, RelativeSource={RelativeSource Self}}">
                                                         <MenuItem Header="Open" Command="{Binding OpenRecordingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                                         <MenuItem Header="Fix audio…" Command="{Binding FixAudioCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
+                                                        <MenuItem Header="Export for sharing" Command="{Binding ExportSharingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                                         <MenuItem Header="Show in folder" Command="{Binding RevealRecordingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                                         <Separator />
                                                         <MenuItem Header="Move to Recycle Bin" Command="{Binding RecycleRecordingCommand}" CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
@@ -1066,7 +1067,7 @@
                                                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" />
                                                     <TextBlock Style="{StaticResource Hint}" Margin="0,2,0,0" Text="{Binding Meta}" TextTrimming="CharacterEllipsis" />
                                                     <TextBlock Style="{StaticResource Hint}" Margin="0,1,0,0" Text="{Binding When}" TextTrimming="CharacterEllipsis" />
-                                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                                    <WrapPanel Orientation="Horizontal" Margin="0,6,0,0">
                                                         <Button Style="{StaticResource GhostButton}" Padding="8,3" FontSize="12" IsEnabled="{Binding CanFixAudio}"
                                                                 ToolTip="{Binding FixAudioTip}" ToolTipService.ShowOnDisabled="True"
                                                                 Command="{Binding DataContext.FixAudioCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}">
@@ -1077,11 +1078,14 @@
                                                         </Button>
                                                         <Button Style="{StaticResource GhostButton}" Padding="8,3" FontSize="12" Margin="6,0,0,0" Content="Open"
                                                                 Command="{Binding DataContext.OpenRecordingCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
+                                                        <Button Style="{StaticResource GhostButton}" Padding="8,3" FontSize="12" Margin="6,0,0,0" Content="Export for sharing"
+                                                                ToolTip="Make a copy with one combined audio track for YouTube and other players. Keeps original quality."
+                                                                Command="{Binding DataContext.ExportSharingCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" />
                                                         <Button Style="{StaticResource IconButton}" Width="28" Height="26" Padding="0" Margin="4,0,0,0" ToolTip="Show in folder"
                                                                 Command="{Binding DataContext.RevealRecordingCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}">
                                                             <TextBlock Style="{StaticResource Icon}" FontSize="12" Text="&#xE838;" />
                                                         </Button>
-                                                    </StackPanel>
+                                                    </WrapPanel>
                                                 </StackPanel>
                                             </Grid>
                                         </DataTemplate>

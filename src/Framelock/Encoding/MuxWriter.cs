@@ -52,7 +52,7 @@ public sealed unsafe class MuxWriter : IDisposable
     public int PacketsWritten { get; private set; }
     public bool HasVideo { get; private set; }
 
-    public MuxWriter(string path, ContainerFormat container, IReadOnlyList<StreamInfo> streams, bool faststart = false)
+    public MuxWriter(string path, ContainerFormat container, IReadOnlyList<StreamInfo> streams, bool faststart = false, string? pairId = null)
     {
         Path = path;
         _faststart = faststart;
@@ -88,6 +88,7 @@ public sealed unsafe class MuxWriter : IDisposable
             }
             _lastDts = Enumerable.Repeat(long.MinValue, (int)_fmt->nb_streams).ToArray();
             ffmpeg.av_dict_set(&_fmt->metadata, "encoder", "Framelock", 0);
+            if (pairId != null) ffmpeg.av_dict_set(&_fmt->metadata, "comment", AudioCompanion.PairComment(pairId), 0);
         }
         catch
         {
@@ -174,8 +175,8 @@ public sealed unsafe class MuxWriter : IDisposable
         _closed = true;
         if (!_headerWritten) return false;
         int r = ffmpeg.av_write_trailer(_fmt);
-        if (r < 0) Log.Warn($"av_write_trailer({Path}): {FFmpegSetup.ErrorText(r)}");
         if (_fmt->pb != null) { var pb = _fmt->pb; ffmpeg.avio_closep(&pb); _fmt->pb = null; }
+        r.Check($"Finalizing {Path}");
         return true;
     }
 

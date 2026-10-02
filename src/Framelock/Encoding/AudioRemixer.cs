@@ -50,18 +50,21 @@ public static unsafe class AudioRemixer
         var ext = Path.GetExtension(input);
         var name = Regex.Replace(Path.GetFileNameWithoutExtension(input), @" \(remix(?: \d+)?\)$", "");
         var p = Path.Combine(dir, $"{name} (remix){ext}");
-        for (int i = 2; File.Exists(p); i++) p = Path.Combine(dir, $"{name} (remix {i}){ext}");
+        for (int i = 2; File.Exists(p) || AudioCompanion.Exists(p); i++) p = Path.Combine(dir, $"{name} (remix {i}){ext}");
         return p;
     }
 
     /// <summary>Writes the remixed file to <paramref name="output"/> (container picked from its extension, or <paramref name="container"/>).</summary>
     public static void Export(string input, string output, MediaInfo info, RemixLevels levels, ContainerFormat container,
-        IProgress<double>? progress = null, CancellationToken ct = default)
+        IProgress<double>? progress = null, CancellationToken ct = default, string? pairId = null)
     {
+        info = AudioCompanion.RefreshInfo(input, info);
         var (sources, replace, mixName, kbps) = Plan(info, levels);
         AVFormatContext* inCtx = null;
+        AVFormatContext* audioCtx = null;
         AVFormatContext* outCtx = null;
         AVPacket* pkt = ffmpeg.av_packet_alloc();
+        AVPacket* audioPacket = null;
         var decoders = new List<TrackDecoder>();
         AudioEncoder? enc = null;
         var pending = new List<EncodedPacket>();
@@ -69,6 +72,14 @@ public static unsafe class AudioRemixer
         {
             ffmpeg.avformat_open_input(&inCtx, input, null, null).Check("Opening the recording");
             ffmpeg.avformat_find_stream_info(inCtx, null).Check("Reading the recording");
+            if (info.AudioSourcePath != null)
+            {
+                ffmpeg.avformat_open_input(&audioCtx, info.AudioSourcePath, null, null).Check("Opening editing audio");
+                ffmpeg.avformat_find_stream_info(audioCtx, null).Check("Reading editing audio");
+                audioPacket = ffmpeg.av_packet_alloc();
+            }
+            var sourceCtx = audioCtx != null ? audioCtx : inCtx;
+            AudioCompanion.ValidateSource(sourceCtx, info);
             if (replace >= inCtx->nb_streams || (replace >= 0 && inCtx->streams[replace]->codecpar->codec_type != AVMediaType.AVMEDIA_TYPE_AUDIO))
                 throw new InvalidOperationException("The recording changed since it was opened. Close this window and open it again.");
             string fmtName = container switch { ContainerFormat.Mkv => "matroska", ContainerFormat.Mov => "mov", _ => "mp4" };
@@ -96,7 +107,7 @@ public static unsafe class AudioRemixer
                 var type = ist->codecpar->codec_type;
                 if (type != AVMediaType.AVMEDIA_TYPE_VIDEO && type != AVMediaType.AVMEDIA_TYPE_AUDIO) continue;
                 if (type == AVMediaType.AVMEDIA_TYPE_AUDIO && mixOut < 0 && (replace < 0 || i == replace)) NewMixStream();
-                if (i == replace) continue; // the old mix is rebuilt, not copied
+                if (type == AVMediaType.AVMEDIA_TYPE_AUDIO) continue; // only the rebuilt mix belongs in the playback video
                 var ost = ffmpeg.avformat_new_stream(outCtx, null);
                 ffmpeg.avcodec_parameters_copy(ost->codecpar, ist->codecpar).Check("Copying codec parameters");
                 ost->codecpar->codec_tag = 0;
@@ -107,26 +118,22 @@ public static unsafe class AudioRemixer
                 ost->r_frame_rate = ist->r_frame_rate;
                 ost->disposition = ist->disposition;
                 ffmpeg.av_dict_copy(&ost->metadata, ist->metadata, 0);
-                if (type == AVMediaType.AVMEDIA_TYPE_AUDIO)
-                {
-                    ost->disposition &= ~ffmpeg.AV_DISPOSITION_DEFAULT;
-                    if (MediaFile.Tag(ist->metadata, "title") is { } title) ffmpeg.av_dict_set(&ost->metadata, "handler_name", title, 0);
-                }
                 map[i] = ost->index;
             }
             if (mixOut < 0) NewMixStream();
 
             ffmpeg.av_dict_copy(&outCtx->metadata, inCtx->metadata, 0);
+            if (pairId != null) ffmpeg.av_dict_set(&outCtx->metadata, "comment", AudioCompanion.PairComment(pairId, MediaFile.Tag(outCtx->metadata, "comment")), 0);
             CopyChapters(inCtx, outCtx);
 
             var queues = new SampleQueue[sources.Count];
             var gains = new float[sources.Count];
-            var srcIndex = new int[inCtx->nb_streams];
+            var srcIndex = new int[sourceCtx->nb_streams];
             Array.Fill(srcIndex, -1);
             for (int k = 0; k < sources.Count; k++)
             {
-                decoders.Add(new TrackDecoder(inCtx, sources[k].Stream));
-                queues[k] = new SampleQueue();
+                decoders.Add(new TrackDecoder(sourceCtx, sources[k].Stream));
+                queues[k] = new SampleQueue { MaxBufferedFrames = TrackDecoder.Rate * 30 };
                 gains[k] = Math.Max(0, sources[k].Gain);
                 srcIndex[sources[k].Stream] = k;
             }
@@ -141,8 +148,18 @@ public static unsafe class AudioRemixer
             hr.Check("Writing the header");
 
             var lastDts = Enumerable.Repeat(long.MinValue, (int)outCtx->nb_streams).ToArray();
+            var sampleTb = new AVRational { num = 1, den = AudioEncoder.SampleRate };
+            bool hasVideo = info.HasVideo, mainEnded = false;
+            long videoEnd = hasVideo ? 0 : long.MaxValue;
             void WriteOut(AVPacket* p, int oi, AVRational from)
             {
+                if (oi == mixOut && hasVideo && p->pts != ffmpeg.AV_NOPTS_VALUE)
+                {
+                    long start = ffmpeg.av_rescale_q(p->pts, from, sampleTb);
+                    if (start >= videoEnd) return;
+                    long available = ffmpeg.av_rescale_q(videoEnd - start, sampleTb, from);
+                    p->duration = Math.Min(p->duration, available);
+                }
                 var ost = oc->streams[oi];
                 p->stream_index = oi;
                 ffmpeg.av_packet_rescale_ts(p, from, ost->time_base);
@@ -175,6 +192,7 @@ public static unsafe class AudioRemixer
                 {
                     ct.ThrowIfCancellationRequested();
                     long need = mixPos + block;
+                    if (mixPos >= videoEnd || (need > videoEnd && !mainEnded)) break;
                     // A track with no audio here (a gap, or it ended early) is silence once the others are well past it.
                     bool ready = queues.All(q => q.Ended || (q.Anchored && q.End >= need)) || demuxPos >= need + TrackDecoder.GapSlack;
                     if (!ready) break;
@@ -188,6 +206,7 @@ public static unsafe class AudioRemixer
                         for (int i = 0; i < mix.Length; i++) mix[i] += tmp[i] * g;
                     }
                     for (int i = 0; i < mix.Length; i++) mix[i] = Limit(mix[i], single, gains[0]);
+                    if (need > videoEnd) Array.Clear(mix, (int)(videoEnd - mixPos) * 2, (int)(need - videoEnd) * 2);
                     enc!.Encode(mix, mixPos);
                     mixPos += block;
                 }
@@ -200,6 +219,44 @@ public static unsafe class AudioRemixer
                 pending.Clear();
             }
 
+            // Merge companion audio into the video timeline without buffering the whole recording.
+            var ap = audioPacket;
+            bool audioPending = false, audioEnded = false;
+            void ReadCompanion(long untilUs)
+            {
+                if (ap == null) return;
+                while (!audioEnded)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (!audioPending)
+                    {
+                        int rr = ffmpeg.av_read_frame(sourceCtx, ap);
+                        if (rr < 0)
+                        {
+                            if (rr != ffmpeg.AVERROR_EOF) rr.Check("Reading editing audio");
+                            audioEnded = true;
+                            break;
+                        }
+                        audioPending = true;
+                    }
+                    int si = ap->stream_index;
+                    var st = sourceCtx->streams[si];
+                    if (ap->pts != ffmpeg.AV_NOPTS_VALUE && untilUs != long.MaxValue &&
+                        ffmpeg.av_rescale_q(ap->pts, st->time_base, new AVRational { num = 1, den = 1_000_000 }) > untilUs) break;
+                    try
+                    {
+                        if (srcIndex[si] >= 0)
+                        {
+                            var dec = decoders[srcIndex[si]];
+                            demuxPos = Math.Max(demuxPos, dec.PositionOf(ap));
+                            dec.Decode(ap, queues[srcIndex[si]]);
+                            Produce();
+                        }
+                    }
+                    finally { ffmpeg.av_packet_unref(ap); audioPending = false; }
+                }
+            }
+
             long duration = inCtx->duration > 0 ? inCtx->duration : 1;
             long lastReport = long.MinValue;
             while (true)
@@ -208,7 +265,7 @@ public static unsafe class AudioRemixer
                 int rr = ffmpeg.av_read_frame(inCtx, pkt);
                 if (rr < 0)
                 {
-                    if (rr != ffmpeg.AVERROR_EOF) Log.Warn($"Remix: stopped reading at {FFmpegSetup.ErrorText(rr)} (damaged file?)");
+                    if (rr != ffmpeg.AVERROR_EOF) rr.Check("Reading the recording");
                     break;
                 }
                 try
@@ -216,12 +273,22 @@ public static unsafe class AudioRemixer
                     int si = pkt->stream_index;
                     if (si >= map.Length) continue;
                     var ist = inCtx->streams[si];
+                    if (ist->codecpar->codec_type == AVMediaType.AVMEDIA_TYPE_VIDEO && pkt->pts != ffmpeg.AV_NOPTS_VALUE)
+                    {
+                        long start = ffmpeg.av_rescale_q(pkt->pts, ist->time_base, sampleTb);
+                        long length = pkt->duration > 0 ? ffmpeg.av_rescale_q(pkt->duration, ist->time_base, sampleTb)
+                            : Math.Max(1, (long)Math.Round(AudioEncoder.SampleRate / Math.Max(1, info.Fps)));
+                        videoEnd = Math.Max(videoEnd, start + length);
+                    }
+                    if (audioPacket != null && pkt->pts != ffmpeg.AV_NOPTS_VALUE && (!hasVideo || ist->codecpar->codec_type == AVMediaType.AVMEDIA_TYPE_VIDEO))
+                        ReadCompanion(hasVideo ? ffmpeg.av_rescale_q(videoEnd, sampleTb, new AVRational { num = 1, den = 1_000_000 })
+                            : ffmpeg.av_rescale_q(pkt->pts, ist->time_base, new AVRational { num = 1, den = 1_000_000 }));
                     if (progress != null && pkt->pts != ffmpeg.AV_NOPTS_VALUE)
                     {
                         long us = ffmpeg.av_rescale_q(pkt->pts, ist->time_base, new AVRational { num = 1, den = 1_000_000 });
                         if (us - lastReport > 250_000) { lastReport = us; progress.Report(Math.Clamp((double)us / duration, 0, 0.99)); }
                     }
-                    if (srcIndex[si] >= 0)
+                    if (audioPacket == null && srcIndex[si] >= 0)
                     {
                         var dec = decoders[srcIndex[si]];
                         demuxPos = Math.Max(demuxPos, dec.PositionOf(pkt));
@@ -229,9 +296,12 @@ public static unsafe class AudioRemixer
                         Produce();
                     }
                     if (map[si] >= 0) WriteOut(pkt, map[si], ist->time_base);
+                    Produce(); // audio may have waited for the next video frame to bound its end
                 }
                 finally { ffmpeg.av_packet_unref(pkt); }
             }
+            mainEnded = true;
+            ReadCompanion(hasVideo ? ffmpeg.av_rescale_q(videoEnd, sampleTb, new AVRational { num = 1, den = 1_000_000 }) : long.MaxValue);
             for (int k = 0; k < decoders.Count; k++)
             {
                 decoders[k].Decode(null, queues[k]);
@@ -249,6 +319,8 @@ public static unsafe class AudioRemixer
             enc?.Dispose();
             foreach (var d in decoders) d.Dispose();
             ffmpeg.av_packet_free(&pkt);
+            if (audioPacket != null) ffmpeg.av_packet_free(&audioPacket);
+            if (audioCtx != null) ffmpeg.avformat_close_input(&audioCtx);
             if (inCtx != null) ffmpeg.avformat_close_input(&inCtx);
             if (outCtx != null)
             {
@@ -307,15 +379,19 @@ public static unsafe class AudioRemixer
     public static string ExportToFile(string input, MediaInfo info, RemixLevels levels, bool replaceOriginal,
         IProgress<double>? progress = null, CancellationToken ct = default)
     {
+        info = AudioCompanion.RefreshInfo(input, info);
+        string pairId = info.RecordingId ?? Guid.NewGuid().ToString("N");
         var container = ContainerOf(input);
         var temp = Path.Combine(Path.GetDirectoryName(input)!, $".{Path.GetFileNameWithoutExtension(input)}.{Guid.NewGuid():N}.part");
+        var audioTemp = AudioCompanion.PathFor(temp);
         try
         {
-            Export(input, temp, info, levels, container, progress, ct);
+            Export(input, temp, info, levels, container, progress, ct, pairId);
+            AudioCompanion.CopyFrom(input, audioTemp, info, pairId);
             ct.ThrowIfCancellationRequested();
             // Give the new file a real name before the original is touched, so no later failure can lose it.
             var remix = SuggestPath(input);
-            File.Move(temp, remix);
+            AudioCompanion.Publish(temp, audioTemp, remix);
             if (!replaceOriginal) return remix;
 
             DateTime created = File.GetCreationTime(input), written = File.GetLastWriteTime(input);
@@ -328,9 +404,6 @@ public static unsafe class AudioRemixer
             try
             {
                 File.Move(remix, input);
-                // Keep the recording's date so it stays in place in the Recordings list.
-                try { File.SetCreationTime(input, created); File.SetLastWriteTime(input, written); } catch { }
-                return input;
             }
             catch (Exception ex)
             {
@@ -338,10 +411,28 @@ public static unsafe class AudioRemixer
                 Log.Warn("Couldn't put the remix in place of the original: " + ex.Message);
                 return remix;
             }
+            try
+            {
+                string remixAudio = AudioCompanion.PathFor(remix);
+                if (File.Exists(remixAudio))
+                {
+                    if (AudioCompanion.Exists(input)) Native.MoveToRecycleBin(AudioCompanion.PathFor(input));
+                    AudioCompanion.MoveAlongside(remixAudio, input);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("Remix saved; editing audio kept beside the remix name: " + ex.Message);
+                throw new IOException($"The video was saved as \"{input}\", but its editing audio could not be moved. The editing audio is still at \"{AudioCompanion.PathFor(remix)}\". Keep both files. The original video is in the Recycle Bin.", ex);
+            }
+            // Keep the recording's date so it stays in place in the Recordings list.
+            try { File.SetCreationTime(input, created); File.SetLastWriteTime(input, written); } catch { }
+            return input;
         }
         finally
         {
             try { if (File.Exists(temp)) File.Delete(temp); } catch (Exception ex) { Log.Warn("Couldn't remove " + temp + ": " + ex.Message); }
+            try { if (File.Exists(audioTemp)) File.Delete(audioTemp); } catch (Exception ex) { Log.Warn("Couldn't remove " + audioTemp + ": " + ex.Message); }
         }
     }
 }

@@ -5,7 +5,7 @@ using Framelock.Core;
 
 namespace Framelock.Encoding;
 
-public sealed record FileSinkResult(string Path, bool Success, long DurationUs, long Bytes, IReadOnlyList<Chapter> Markers, string? Error, string? Warning = null);
+public sealed record FileSinkResult(string Path, bool Success, long DurationUs, long Bytes, IReadOnlyList<Chapter> Markers, string? Error, string? Warning = null, string? AudioTracksPath = null);
 
 /// <summary>
 /// Writes one recording file on its own thread. Every cut (start, pause, resume, stop, split) lands exactly on a forced
@@ -26,7 +26,7 @@ public sealed class FileSink : IPacketSink
     private readonly BlockingCollection<EncodedPacket> _queue = new(new ConcurrentQueue<EncodedPacket>());
     private readonly ConcurrentQueue<Ctl> _control = new();
     private readonly Thread _thread;
-    private readonly MuxWriter _mux;
+    private readonly RecordingMuxWriter _mux;
     private readonly int[] _audioTracks;
     private readonly TaskCompletionSource<FileSinkResult> _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly List<Chapter> _markers = new();
@@ -58,9 +58,9 @@ public sealed class FileSink : IPacketSink
     public bool Started => _everStarted;
     public int QueueLength => _queue.Count;
 
-    public FileSink(string path, ContainerFormat container, IReadOnlyList<StreamInfo> streams, long startAtUs, bool saveMarkers)
+    public FileSink(string path, ContainerFormat container, IReadOnlyList<StreamInfo> streams, long startAtUs, bool saveMarkers, string? audioTracksPath = null)
     {
-        _mux = new MuxWriter(path, container, streams);
+        _mux = new RecordingMuxWriter(path, container, streams, audioTracksPath: audioTracksPath);
         _audioTracks = streams.Where(s => !s.IsVideo).Select(s => s.Track).ToArray();
         _startAtUs = startAtUs;
         _saveMarkers = saveMarkers;
@@ -334,10 +334,20 @@ public sealed class FileSink : IPacketSink
         if (!ok)
         {
             _error ??= "No video frames were recorded.";
-            try { if (File.Exists(Path) && new FileInfo(Path).Length < 64 * 1024) File.Delete(Path); } catch { }
+            try
+            {
+                if (!_mux.HasVideo || (File.Exists(Path) && new FileInfo(Path).Length < 64 * 1024))
+                {
+                    if (File.Exists(Path)) File.Delete(Path);
+                    if (_mux.AudioTracksPath is { } audio && File.Exists(audio)) File.Delete(audio);
+                }
+            }
+            catch (Exception ex) { Log.Warn("Partial recording kept: " + ex.Message); }
         }
+        if (_error != null && _mux.AudioTracksPath is { } partial && File.Exists(partial))
+            _error += $" Partial files were kept: {Path} and {partial}";
         Log.Info($"Recording finished: {Path} ({duration / 1e6:F1}s, {_mux.BytesWritten / 1048576.0:F1} MB){(ok ? "" : " - " + _error)}");
-        _done.TrySetResult(new FileSinkResult(Path, ok && _error == null, duration, _mux.BytesWritten, _markers.ToList(), _error, _warning));
+        _done.TrySetResult(new FileSinkResult(Path, ok && _error == null, duration, _mux.BytesWritten, _markers.ToList(), _error, _warning, _mux.AudioTracksPath));
     }
 
     public static List<Chapter> WithStartChapter(IReadOnlyList<Chapter> markers)

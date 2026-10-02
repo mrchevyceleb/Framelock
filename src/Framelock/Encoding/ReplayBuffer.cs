@@ -86,8 +86,8 @@ public sealed class ReplayBuffer : IPacketSink, IDisposable
     {
         List<EncodedPacket> snapshot;
         lock (_lock) snapshot = _packets.Select(p => p.Clone()).ToList();
-        MuxWriter mux;
-        try { mux = new MuxWriter(path, ContainerFormat.Mp4, _streams, faststart: true); }
+        RecordingMuxWriter mux;
+        try { mux = new RecordingMuxWriter(path, ContainerFormat.Mp4, _streams, faststart: true); }
         catch (Exception ex)
         {
             foreach (var p in snapshot) p.Dispose();
@@ -124,9 +124,23 @@ public sealed class ReplayBuffer : IPacketSink, IDisposable
             {
                 foreach (var p in snapshot) p.Dispose();
                 mux.Dispose();
+                if (error != null)
+                {
+                    if (!mux.HasVideo)
+                    {
+                        try
+                        {
+                            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                            if (mux.AudioTracksPath is { } audio && System.IO.File.Exists(audio)) System.IO.File.Delete(audio);
+                        }
+                        catch (Exception ex) { Log.Warn("Partial replay kept: " + ex.Message); }
+                    }
+                    if (System.IO.File.Exists(path)) error += $" Partial replay kept: {path}";
+                    if (mux.AudioTracksPath is { } partial && System.IO.File.Exists(partial)) error += $" Editing audio kept: {partial}";
+                }
             }
             Log.Info($"Replay saved: {path} ({mux.MaxVideoEndUs / 1e6:F1}s)");
-            return new FileSinkResult(path, error == null, mux.MaxVideoEndUs, mux.BytesWritten, Array.Empty<Chapter>(), error);
+            return new FileSinkResult(path, error == null, mux.MaxVideoEndUs, mux.BytesWritten, Array.Empty<Chapter>(), error, AudioTracksPath: mux.AudioTracksPath);
         });
     }
 

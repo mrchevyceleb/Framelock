@@ -520,7 +520,8 @@ public sealed class RecorderController : ObservableObject, IDisposable
         var container = Settings.Container;
         bool crashSafe = Settings.CrashSafe && container != ContainerFormat.Mkv;
         string writePath = crashSafe ? UniquePath(Path.ChangeExtension(finalPath, ".recording.mkv")) : finalPath;
-        var sink = new FileSink(writePath, crashSafe ? ContainerFormat.Mkv : container, p.Streams, startUs, Settings.SaveMarkers);
+        var sink = new FileSink(writePath, crashSafe ? ContainerFormat.Mkv : container, p.Streams, startUs, Settings.SaveMarkers,
+            AudioCompanion.PathFor(finalPath));
         p.Hub.Add(sink);
         var captured = (sink, finalPath, crashSafe, container, p);
         _ = sink.Completion.ContinueWith(t => _ui.BeginInvoke(() => TrackFinalize(OnSinkCompleted(captured.sink, captured.finalPath, captured.crashSafe, captured.container, captured.p, t.Result))));
@@ -583,6 +584,12 @@ public sealed class RecorderController : ObservableObject, IDisposable
                 try { File.Move(r.Path, mkv); result = mkv; } catch (Exception moveEx) { Log.Warn("Keeping the .recording.mkv name: " + moveEx.Message); }
                 Notify?.Invoke(new Notification("Kept as MKV", $"Converting to {container} failed ({ex.Message}). Your recording is safe as MKV.", result, true));
             }
+        }
+        try { AudioCompanion.MoveAlongside(r.AudioTracksPath, result); }
+        catch (Exception ex)
+        {
+            Log.Warn("Editing audio kept under its original name: " + ex.Message);
+            Notify?.Invoke(new Notification("Editing audio kept", $"Your video is saved. Keep {r.AudioTracksPath} for audio editing.", result, true));
         }
         if (Settings.SaveMarkers && r.Markers.Count > 0) WriteChapterFile(result, r.Markers);
         var size = new FileInfo(result).Exists ? new FileInfo(result).Length : r.Bytes;
@@ -888,19 +895,19 @@ public sealed class RecorderController : ObservableObject, IDisposable
         if (string.IsNullOrWhiteSpace(folder)) folder = Paths.DefaultOutputFolder;
         if (subfolder != null) folder = Path.Combine(folder, subfolder);
         Directory.CreateDirectory(folder);
-        return UniquePath(Path.Combine(folder, name + ext));
+        return UniquePath(Path.Combine(folder, name + ext), checkCompanion: true);
     }
 
-    private static string UniquePath(string path)
+    private static string UniquePath(string path, bool checkCompanion = false)
     {
-        if (!File.Exists(path)) return path;
+        if (!File.Exists(path) && !(checkCompanion && AudioCompanion.Exists(path))) return path;
         var dir = Path.GetDirectoryName(path)!;
         var baseName = Path.GetFileNameWithoutExtension(path);
         var ext = Path.GetExtension(path);
         for (int i = 2; ; i++)
         {
             var p = Path.Combine(dir, $"{baseName} ({i}){ext}");
-            if (!File.Exists(p)) return p;
+            if (!File.Exists(p) && !(checkCompanion && AudioCompanion.Exists(p))) return p;
         }
     }
 

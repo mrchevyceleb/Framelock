@@ -16,7 +16,9 @@ Installed and packaged portable copies check for updates at startup and every si
 - Image and text overlays (logos, your @handle) that you drag into place on the live preview.
 - Choose **Webcam** in the source bar to record only your camera, with a selectable recording frame rate. Camera selection, resolution and mirroring are in **Overlays**.
 - Choose **Add webcam** in **Overlays** to add a movable, resizable camera view to a display, window or region recording. Its capture frame rate is independent of the screen recording rate. The actual camera mode is shown when the requested resolution or rate is unavailable; output keeps the selected recording frame rate by repeating camera frames when needed.
-- Records desktop or game audio and your microphone, with separate tracks, a noise gate, push-to-talk and a sync offset.
+- Records desktop or game audio and your microphone in one combined playback track, so sharing a video never depends on a player choosing the right audio track. Includes a noise gate, push-to-talk and a sync offset.
+- **Keep separate game and mic audio for editing** saves a small audio-only companion (`video.mp4.audio.mka`) beside the video. **Fix audio** uses it automatically; keep both files for editing, and send/upload just the video for playback. Recordings, replays and audio remixes all use this layout. Older recordings with embedded separate tracks remain editable.
+- **Recordings → Export for sharing** creates a copy of an older recording with only its combined audio track in the video. Video and audio are copied without re-encoding; the original remains intact.
 - Instant replay buffer, markers that become chapters in the file (plus a YouTube chapter list), pause, and file splitting.
 - Crash-safe recording: it writes MKV while recording, then remuxes to MP4.
 - A Recordings tab lists your videos with thumbnails. **Fix audio** rebalances game and mic volume after recording: you hear the new balance live, then save it as a new file or replace the original. The video is copied untouched and only the mix track is rebuilt, so there is no quality loss.

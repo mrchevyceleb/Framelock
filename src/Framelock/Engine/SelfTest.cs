@@ -152,6 +152,7 @@ public static class SelfTest
             foreach (var f in Directory.GetFiles(dir)) try { File.Delete(f); } catch { }
             var copy = Path.Combine(dir, "source" + Path.GetExtension(file));
             File.Copy(file, copy);
+            if (AudioCompanion.Exists(file)) File.Copy(AudioCompanion.PathFor(file), AudioCompanion.PathFor(copy));
             var sw = Stopwatch.StartNew();
             var info = MediaFile.Probe(copy);
             Say($"probe: {info.DurationSeconds:F2}s {info.Width}x{info.Height} {info.Fps:F2}fps {info.VideoCodec}; audio: " +
@@ -173,8 +174,8 @@ public static class SelfTest
             if (info.HasSeparateTracks)
             {
                 // The new mix must match SoftClip(0.5 game + 2 mic) built from the (unchanged) separate tracks.
-                var (d0, d) = DecodeAll(result, outInfo.Desktop!.StreamIndex);
-                var (m0, m) = DecodeAll(result, outInfo.Mic!.StreamIndex);
+                var (d0, d) = DecodeAll(outInfo.AudioSourcePath ?? result, outInfo.Desktop!.StreamIndex);
+                var (m0, m) = DecodeAll(outInfo.AudioSourcePath ?? result, outInfo.Mic!.StreamIndex);
                 var (x0, mix) = DecodeAll(result, outInfo.Mix!.StreamIndex);
                 var (o0, old) = DecodeAll(copy, info.Mix!.StreamIndex);
                 Say($"starts (samples): game {d0} mic {m0} new mix {x0} old mix {o0}");

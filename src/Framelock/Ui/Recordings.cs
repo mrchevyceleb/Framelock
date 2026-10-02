@@ -61,7 +61,8 @@ public sealed class RecordingItem : ObservableObject
           {
               i.HasVideo ? $"{i.Width}×{i.Height}" : "Audio only",
               i.Fps > 0 ? $"{Math.Round(i.Fps, i.Fps % 1 == 0 ? 0 : 2)} fps" : null,
-              i.Audio.Count switch { 0 => "no audio", 1 => "1 audio track", var n => $"{n} audio tracks" },
+              i.AudioSourcePath != null ? "mixed audio · editing audio saved"
+                  : i.Audio.Count switch { 0 => "no audio", 1 => "mixed audio", var n => $"{n} audio tracks" },
           }.Where(s => s != null))
         : Error ?? "Reading…";
 

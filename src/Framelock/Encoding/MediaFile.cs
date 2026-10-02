@@ -11,11 +11,15 @@ public sealed record AudioTrackInfo(int StreamIndex, string Name, AudioRole Role
 /// <summary>What a finished recording contains (read with <see cref="MediaFile.Probe"/>).</summary>
 public sealed record MediaInfo(string Path, double DurationSeconds, int Width, int Height, double Fps, string VideoCodec, IReadOnlyList<AudioTrackInfo> Audio)
 {
+    /// <summary>Separate game/mic audio may live in a companion instead of the playback video.</summary>
+    public string? AudioSourcePath { get; init; }
+    public string? RecordingId { get; init; }
+    public double StartSeconds { get; init; }
     public AudioTrackInfo? Desktop => Audio.FirstOrDefault(a => a.Role == AudioRole.Desktop);
     public AudioTrackInfo? Mic => Audio.FirstOrDefault(a => a.Role == AudioRole.Mic);
     public AudioTrackInfo? Mix => Audio.FirstOrDefault(a => a.Role == AudioRole.Mix);
     /// <summary>Game and mic were kept as their own tracks, so the mix can be rebuilt with new levels.</summary>
-    public bool HasSeparateTracks => Desktop != null && Mic != null;
+    public bool HasSeparateTracks => Audio.Count(a => a.Role == AudioRole.Desktop) == 1 && Audio.Count(a => a.Role == AudioRole.Mic) == 1;
     public bool HasVideo => Width > 0;
 }
 
@@ -24,6 +28,26 @@ public static unsafe class MediaFile
     public static readonly string[] VideoExtensions = { ".mp4", ".mkv", ".mov" };
 
     public static MediaInfo Probe(string path)
+    {
+        var info = ProbeFile(path);
+        string companion = AudioCompanion.PathFor(path);
+        if (!info.HasSeparateTracks && System.IO.File.Exists(companion))
+        {
+            try
+            {
+                var editing = ProbeFile(companion);
+                bool identityMatches = info.RecordingId != null && info.RecordingId == editing.RecordingId;
+                bool timingMatches = Math.Abs(info.DurationSeconds - editing.DurationSeconds) <= 0.5 && Math.Abs(info.StartSeconds - editing.StartSeconds) <= 0.25;
+                if (editing.HasSeparateTracks && editing.Audio.Count == 2 && identityMatches && timingMatches)
+                    info = info with { Audio = info.Audio.Concat(editing.Audio.Where(a => a.Role is AudioRole.Desktop or AudioRole.Mic)).ToArray(), AudioSourcePath = companion };
+                else Log.Warn("Ignoring editing audio that does not match " + path);
+            }
+            catch (Exception ex) { Log.Warn("Couldn't read editing audio: " + ex.Message); }
+        }
+        return info;
+    }
+
+    private static MediaInfo ProbeFile(string path)
     {
         AVFormatContext* fmt = null;
         ffmpeg.avformat_open_input(&fmt, path, null, null).Check("Opening the file");
@@ -54,7 +78,9 @@ public static unsafe class MediaFile
                     audio.Add(new AudioTrackInfo(i, name, RoleOf(name), (int)(par->bit_rate / 1000)));
                 }
             }
-            return new MediaInfo(path, dur, w, h, fps, codec, audio);
+            return new MediaInfo(path, dur, w, h, fps, codec, audio) {
+                RecordingId = AudioCompanion.PairId(Tag(fmt->metadata, "comment")),
+                StartSeconds = fmt->start_time != ffmpeg.AV_NOPTS_VALUE ? fmt->start_time / (double)ffmpeg.AV_TIME_BASE : 0 };
         }
         finally { ffmpeg.avformat_close_input(&fmt); }
     }
@@ -65,7 +91,7 @@ public static unsafe class MediaFile
         return e == null ? null : Marshal.PtrToStringUTF8((IntPtr)e->value);
     }
 
-    private static AudioRole RoleOf(string name)
+    internal static AudioRole RoleOf(string name)
     {
         var n = name.Trim().ToLowerInvariant();
         if (n.StartsWith("mix") || n == "audio") return AudioRole.Mix;
@@ -197,6 +223,7 @@ internal sealed class SampleQueue
     public bool Anchored { get; private set; }
     public bool Ended { get; set; }
     public long End => Start + _count;
+    public int MaxBufferedFrames { get; init; } = int.MaxValue;
 
     /// <summary>Starts the queue at <paramref name="pos"/>; anything decoded before it is dropped.</summary>
     public void Anchor(long pos) { Start = pos; _off = 0; _count = 0; Anchored = true; Ended = false; }
@@ -250,6 +277,8 @@ internal sealed class SampleQueue
 
     private void Ensure(int frames)
     {
+        if (frames > MaxBufferedFrames)
+            throw new InvalidOperationException("The recording has inconsistent audio timestamps. The original recording was kept.");
         int cap = _buf.Length / 2;
         if (_off + frames <= cap) return;
         if (frames <= cap / 2)

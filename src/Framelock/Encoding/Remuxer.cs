@@ -6,7 +6,8 @@ namespace Framelock.Encoding;
 /// <summary>Lossless container conversion (the crash-safe MKV → final MP4/MOV step). Copies chapters and adds fast-start.</summary>
 public static unsafe class Remuxer
 {
-    public static void Remux(string input, string output, ContainerFormat container, IProgress<double>? progress = null)
+    public static void Remux(string input, string output, ContainerFormat container, IProgress<double>? progress = null,
+        IReadOnlySet<int>? streamIndexes = null, bool keepVideo = false, string? pairId = null)
     {
         AVFormatContext* inCtx = null;
         AVFormatContext* outCtx = null;
@@ -17,6 +18,9 @@ public static unsafe class Remuxer
             ffmpeg.avformat_find_stream_info(inCtx, null).Check("Reading stream info");
             string fmtName = container switch { ContainerFormat.Mkv => "matroska", ContainerFormat.Mov => "mov", _ => "mp4" };
             ffmpeg.avformat_alloc_output_context2(&outCtx, null, fmtName, output).Check("Creating output");
+            // Preserve the recording timeline when extracting audio, including codec preroll before zero.
+            if (container == ContainerFormat.Mkv && streamIndexes != null && !keepVideo)
+                outCtx->avoid_negative_ts = ffmpeg.AVFMT_AVOID_NEG_TS_DISABLED;
 
             var map = new int[inCtx->nb_streams];
             int next = 0;
@@ -25,6 +29,7 @@ public static unsafe class Remuxer
                 var ist = inCtx->streams[i];
                 var type = ist->codecpar->codec_type;
                 if (type != AVMediaType.AVMEDIA_TYPE_VIDEO && type != AVMediaType.AVMEDIA_TYPE_AUDIO) { map[i] = -1; continue; }
+                if (streamIndexes != null && !streamIndexes.Contains(i) && !(keepVideo && type == AVMediaType.AVMEDIA_TYPE_VIDEO)) { map[i] = -1; continue; }
                 var ost = ffmpeg.avformat_new_stream(outCtx, null);
                 ffmpeg.avcodec_parameters_copy(ost->codecpar, ist->codecpar).Check("Copying codec parameters");
                 ost->codecpar->codec_tag = 0;
@@ -42,6 +47,7 @@ public static unsafe class Remuxer
             }
 
             ffmpeg.av_dict_copy(&outCtx->metadata, inCtx->metadata, 0);
+            if (pairId != null) ffmpeg.av_dict_set(&outCtx->metadata, "comment", AudioCompanion.PairComment(pairId, MediaFile.Tag(outCtx->metadata, "comment")), 0);
             // Chapters (markers) survive the conversion.
             if (inCtx->nb_chapters > 0)
             {
@@ -73,8 +79,14 @@ public static unsafe class Remuxer
             long duration = inCtx->duration > 0 ? inCtx->duration : 1;
             long lastReport = 0;
             var lastDts = Enumerable.Repeat(long.MinValue, (int)outCtx->nb_streams).ToArray();
-            while (ffmpeg.av_read_frame(inCtx, pkt) >= 0)
+            while (true)
             {
+                int read = ffmpeg.av_read_frame(inCtx, pkt);
+                if (read < 0)
+                {
+                    if (read != ffmpeg.AVERROR_EOF) read.Check("Reading the recording");
+                    break;
+                }
                 int si = pkt->stream_index;
                 if (si >= map.Length || map[si] < 0) { ffmpeg.av_packet_unref(pkt); continue; }
                 var ist = inCtx->streams[si];

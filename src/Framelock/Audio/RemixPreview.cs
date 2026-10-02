@@ -31,14 +31,16 @@ public sealed unsafe class RemixPreview : ISampleProvider, IDisposable
 
     public RemixPreview(string path, MediaInfo info)
     {
+        info = AudioCompanion.RefreshInfo(path, info);
         DurationSeconds = info.DurationSeconds;
         var (sources, _, _, _) = AudioRemixer.Plan(info, new RemixLevels(1, 1));
         AVFormatContext* fmt = null;
-        ffmpeg.avformat_open_input(&fmt, path, null, null).Check("Opening the recording");
+        ffmpeg.avformat_open_input(&fmt, info.AudioSourcePath ?? path, null, null).Check("Opening the recording audio");
         _fmt = fmt;
         try
         {
             ffmpeg.avformat_find_stream_info(_fmt, null).Check("Reading the recording");
+            AudioCompanion.ValidateSource(_fmt, info);
             _srcIndex = new int[_fmt->nb_streams];
             Array.Fill(_srcIndex, -1);
             _dec = new TrackDecoder[sources.Count];

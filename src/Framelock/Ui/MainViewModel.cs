@@ -107,6 +107,8 @@ public sealed class MainViewModel : ObservableObject
         OpenRecordingCommand = new RelayCommand(p => { if (p is RecordingItem r) OpenFile(r.Path); });
         RevealRecordingCommand = new RelayCommand(p => { if (p is RecordingItem r) RevealFile(r.Path); });
         FixAudioCommand = new RelayCommand(p => { if (p is RecordingItem r) RemixWindow.ShowFor(r.Path); });
+        ExportSharingCommand = new RelayCommand(p => { if (p is RecordingItem r) _ = ExportSharingAsync(r); },
+            p => p is RecordingItem { Info.HasVideo: true } && !_sharing && !Rec.IsBusy);
         RecycleRecordingCommand = new RelayCommand(p => { if (p is RecordingItem r) RecycleRecording(r); });
         RefreshRecordingsCommand = new RelayCommand(() => Recordings.Refresh(S.OutputFolder));
         // New files (recordings, replays, fixed audio) show up in the Recordings tab right away.
@@ -120,8 +122,26 @@ public sealed class MainViewModel : ObservableObject
     public ICommand OpenRecordingCommand { get; }
     public ICommand RevealRecordingCommand { get; }
     public ICommand FixAudioCommand { get; }
+    public ICommand ExportSharingCommand { get; }
     public ICommand RecycleRecordingCommand { get; }
     public ICommand RefreshRecordingsCommand { get; }
+
+    private bool _sharing;
+    private async Task ExportSharingAsync(RecordingItem recording)
+    {
+        if (_sharing) return;
+        _sharing = true;
+        CommandManager.InvalidateRequerySuggested();
+        try
+        {
+            Toast.Show(new Notification("Preparing sharing copy", "Keeping the video and combined audio at their original quality."));
+            string output = await Task.Run(() => AudioCompanion.ExportForSharing(recording.Path, MediaFile.Probe(recording.Path)));
+            Recordings.Refresh(S.OutputFolder);
+            Toast.Show(new Notification("Sharing copy ready", Path.GetFileName(output) + " · game and mic play together", output));
+        }
+        catch (Exception ex) { Toast.Show(new Notification("Couldn't prepare sharing copy", ex.Message, IsError: true)); }
+        finally { _sharing = false; CommandManager.InvalidateRequerySuggested(); }
+    }
 
     private void RecycleRecording(RecordingItem r)
     {
@@ -130,6 +150,16 @@ public sealed class MainViewModel : ObservableObject
             Native.MoveToRecycleBin(r.Path);
             Recordings.Items.Remove(r);
             Recordings.Refresh(S.OutputFolder);
+            string companion = AudioCompanion.PathFor(r.Path);
+            if (File.Exists(companion))
+            {
+                try { Native.MoveToRecycleBin(companion); }
+                catch (Exception ex)
+                {
+                    Toast.Show(new Notification("Video deleted; editing audio kept", ex.Message, companion, IsError: true));
+                    return;
+                }
+            }
             Toast.Show(new Notification("Moved to the Recycle Bin", System.IO.Path.GetFileName(r.Path)));
         }
         catch (Exception ex) { Toast.Show(new Notification("Couldn't delete", ex.Message, IsError: true)); }
