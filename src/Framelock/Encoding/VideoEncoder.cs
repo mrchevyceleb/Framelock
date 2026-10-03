@@ -39,7 +39,8 @@ public sealed unsafe class VideoEncoder : IDisposable
     private AVBufferRef* _hwDevice;
     private AVBufferRef* _hwFrames;
     private AVFrame* _hwFrame;
-    private readonly bool _zeroCopy;
+    private bool _zeroCopy;
+    private bool _qvbrAttempted;
     private readonly Dictionary<IntPtr, ID3D11Texture2D> _poolTextures = new();
     private long _framesSubmitted, _framesDropped, _bytesOut;
     private bool _flushed;
@@ -54,7 +55,7 @@ public sealed unsafe class VideoEncoder : IDisposable
     private readonly ID3D11Texture2D[]? _staging;
     private readonly (long pts, bool key, bool used)[]? _stagingInfo;
     private int _stagingWrite;
-    private readonly bool _planar; // encoder wants yuv420p instead of nv12
+    private bool _planar; // encoder wants yuv420p instead of nv12
     private readonly ConcurrentBag<IntPtr>? _framePool;
 
     public VideoEncoder(EncoderInfo info, D3DContext d3d, int width, int height, int fps, VideoEncoderSettings s, bool nv12Input, Action<EncodedPacket> output)
@@ -75,53 +76,60 @@ public sealed unsafe class VideoEncoder : IDisposable
 
         var codec = ffmpeg.avcodec_find_encoder_by_name(info.Id);
         if (codec == null) throw new FFmpegException($"Encoder {info.Id} is not in this FFmpeg build");
-        _ctx = ffmpeg.avcodec_alloc_context3(codec);
-        try
+        bool TryOpen(bool allowQvbr)
         {
-            _ctx->width = width;
-            _ctx->height = height;
-            _ctx->time_base = TimeBase;
-            _ctx->framerate = new AVRational { num = fps, den = 1 };
-            _ctx->sample_aspect_ratio = new AVRational { num = 1, den = 1 };
-            _ctx->gop_size = Math.Max(1, fps * Math.Clamp(s.KeyframeSeconds, 1, 10));
-            _ctx->color_primaries = AVColorPrimaries.AVCOL_PRI_BT709;
-            _ctx->color_trc = AVColorTransferCharacteristic.AVCOL_TRC_BT709;
-            _ctx->colorspace = AVColorSpace.AVCOL_SPC_BT709;
-            _ctx->color_range = AVColorRange.AVCOL_RANGE_MPEG;
-            _ctx->chroma_sample_location = AVChromaLocation.AVCHROMA_LOC_LEFT;
-            _ctx->flags |= ffmpeg.AV_CODEC_FLAG_GLOBAL_HEADER;
-
-            int lookahead = ConfigureRateAndOptions(s);
-
-            if (_zeroCopy && !SetupHwFrames(nv12Input, lookahead + (s.BFrames ? 4 : 0)))
+            _zeroCopy = info.UsesD3D11Frames;
+            _ctx = ffmpeg.avcodec_alloc_context3(codec);
+            try
             {
-                // No usable hardware frame pool at all (some drivers cannot create NV12 texture arrays even with
-                // explicit bind flags, and per-frame single textures failed too): read back and encode from system memory.
-                if (!nv12Input) throw new FFmpegException("This GPU cannot produce NV12 frames for CPU/QSV encoding.");
-                _zeroCopy = false;
-                Log.Warn($"{info.Label}: no D3D11 hardware frame pool; encoding from system memory");
-            }
+                _ctx->width = width;
+                _ctx->height = height;
+                _ctx->time_base = TimeBase;
+                _ctx->framerate = new AVRational { num = fps, den = 1 };
+                _ctx->sample_aspect_ratio = new AVRational { num = 1, den = 1 };
+                _ctx->gop_size = Math.Max(1, fps * Math.Clamp(s.KeyframeSeconds, 1, 10));
+                _ctx->color_primaries = AVColorPrimaries.AVCOL_PRI_BT709;
+                _ctx->color_trc = AVColorTransferCharacteristic.AVCOL_TRC_BT709;
+                _ctx->colorspace = AVColorSpace.AVCOL_SPC_BT709;
+                _ctx->color_range = AVColorRange.AVCOL_RANGE_MPEG;
+                _ctx->chroma_sample_location = AVChromaLocation.AVCHROMA_LOC_LEFT;
+                _ctx->flags |= ffmpeg.AV_CODEC_FLAG_GLOBAL_HEADER;
 
-            if (_zeroCopy)
-            {
-                _ctx->pix_fmt = AVPixelFormat.AV_PIX_FMT_D3D11;
-                _ctx->sw_pix_fmt = nv12Input ? AVPixelFormat.AV_PIX_FMT_NV12 : AVPixelFormat.AV_PIX_FMT_BGRA;
-                _ctx->hw_frames_ctx = ffmpeg.av_buffer_ref(_hwFrames);
-            }
-            else
-            {
-                _planar = info.Id is "libx265" or "libsvtav1";
-                _ctx->pix_fmt = _planar ? AVPixelFormat.AV_PIX_FMT_YUV420P : AVPixelFormat.AV_PIX_FMT_NV12;
-                if (info.Family == EncoderFamily.Software) _ctx->thread_count = 0;
-            }
+                int lookahead = ConfigureRateAndOptions(s, allowQvbr);
 
-            ffmpeg.avcodec_open2(_ctx, codec, null).Check($"Opening {info.Id}");
+                if (_zeroCopy && !SetupHwFrames(nv12Input, lookahead + (s.BFrames ? 4 : 0)))
+                {
+                    // No usable hardware frame pool at all (some drivers cannot create NV12 texture arrays even with
+                    // explicit bind flags, and per-frame single textures failed too): read back and encode from system memory.
+                    if (!nv12Input) throw new FFmpegException("This GPU cannot produce NV12 frames for CPU/QSV encoding.");
+                    _zeroCopy = false;
+                    Log.Warn($"{info.Label}: no D3D11 hardware frame pool; encoding from system memory");
+                }
+
+                if (_zeroCopy)
+                {
+                    _ctx->pix_fmt = AVPixelFormat.AV_PIX_FMT_D3D11;
+                    _ctx->sw_pix_fmt = nv12Input ? AVPixelFormat.AV_PIX_FMT_NV12 : AVPixelFormat.AV_PIX_FMT_BGRA;
+                    _ctx->hw_frames_ctx = ffmpeg.av_buffer_ref(_hwFrames);
+                }
+                else
+                {
+                    _planar = info.Id is "libx265" or "libsvtav1";
+                    _ctx->pix_fmt = _planar ? AVPixelFormat.AV_PIX_FMT_YUV420P : AVPixelFormat.AV_PIX_FMT_NV12;
+                    if (info.Family == EncoderFamily.Software) _ctx->thread_count = 0;
+                }
+
+                ffmpeg.avcodec_open2(_ctx, codec, null).Check($"Opening {info.Id}");
+                return true;
+            }
+            catch
+            {
+                FreeContext();
+                return false;
+            }
         }
-        catch
-        {
-            FreeContext();
-            throw;
-        }
+        if (!TryOpen(allowQvbr: true) && _qvbrAttempted) TryOpen(allowQvbr: false); // GPU without QVBR: retry with cqp
+        if (_ctx == null) throw new FFmpegException($"Opening {info.Id} failed");
 
         if (_zeroCopy)
         {
@@ -153,7 +161,7 @@ public sealed unsafe class VideoEncoder : IDisposable
         if (r < 0) Log.Debug($"{Info.Id}: option {name}={value} not applied ({FFmpegSetup.ErrorText(r)})");
     }
 
-    private int ConfigureRateAndOptions(VideoEncoderSettings s)
+    private int ConfigureRateAndOptions(VideoEncoderSettings s, bool allowQvbr)
     {
         long bitrate = (long)Math.Clamp(s.BitrateMbps, 1, 1000) * 1_000_000;
         int q = Math.Clamp(s.Quality, 0, 51);
@@ -213,17 +221,19 @@ public sealed unsafe class VideoEncoder : IDisposable
                     case RateControlMode.ConstantQuality:
                     {
                         // AMD's AMF runtime crashes the process (access violation in the encoder submit path) when a
-                        // cqp session encodes HEVC/AV1 at 4K-class resolutions on some drivers (seen on a Radeon 8060S,
+                        // cqp session encodes HEVC or AV1 at 4K-class resolutions on some drivers (seen on a Radeon 8060S,
                         // driver 32.0.31041: cqp fine up to 3520×1980, instant native crash at 3840×2160; stock ffmpeg
-                        // -rc cqp crashes the same way). QVBR targets the same 0-51 quality scale and works there, so
-                        // large frames use it. bit_rate is kept as a ceiling in case an old GPU has no QVBR and the
-                        // driver silently falls back to VBR.
-                        bool largeFrame = (long)Width * Height >= 3520L * 1980; // ~7 MP and up (4K-class)
-                        if (largeFrame)
+                        // -rc cqp crashes the same way). H.264 cqp is unaffected. QVBR targets the same 0-51 quality scale
+                        // and works where cqp crashes, so large HEVC/AV1 frames use it; if the GPU has no QVBR and the
+                        // open fails, the ctor retries once with cqp.
+                        bool qvbr = allowQvbr && Info.Codec is VideoCodec.Hevc or VideoCodec.Av1
+                            && (long)Width * Height >= 3520L * 1980; // ~7 MP and up (4K-class)
+                        if (qvbr)
                         {
+                            _qvbrAttempted = true;
                             Opt("rc", "qvbr");
                             Opt("qvbr_quality_level", q.ToString());
-                            _ctx->bit_rate = bitrate;
+                            _ctx->bit_rate = bitrate; // ceiling if an old GPU lacks QVBR and the driver falls back to VBR
                             _ctx->rc_max_rate = bitrate * 3 / 2;
                         }
                         else
@@ -303,11 +313,14 @@ public sealed unsafe class VideoEncoder : IDisposable
         int pool = Math.Max(20, 12 + extraFrames);
         if (frameBytes > 40_000_000) pool = Math.Max(12, pool / 2); // 8K: keep VRAM sane
         // Preferred: one texture array (static pool). Some drivers reject an array with no bind flags (E_INVALIDARG),
-        // so retry with explicit flags before giving up on the array pool.
+        // so retry with explicit flags before giving up on the array pool. Rejection is cached per bind flag and
+        // pixel format (the capability differs between NV12 and BGRA) so each combination is only tried and logged once.
         foreach (uint bind in s_arrayBindOrder)
         {
-            if (!s_arrayBindRejected.Contains(bind) && TryInitFrames(nv12, pool, bind)) return true;
-            s_arrayBindRejected.Add(bind); // don't retry (and re-log) on every encoder open
+            bool alreadyRejected;
+            lock (s_arrayBindRejected) alreadyRejected = s_arrayBindRejected.Contains((bind, nv12));
+            if (!alreadyRejected && TryInitFrames(nv12, pool, bind)) return true;
+            lock (s_arrayBindRejected) s_arrayBindRejected.Add((bind, nv12)); // don't retry (and re-log) on every encoder open
         }
         // Last resort: let FFmpeg allocate single textures on demand (bounded by the encoder's own queue).
         // Works for NVENC, QSV and AMF alike (verified against AMF HEVC/AV1 at 4K); only when even this init
@@ -325,7 +338,7 @@ public sealed unsafe class VideoEncoder : IDisposable
     }
 
     private static readonly uint[] s_arrayBindOrder = { 0, D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_RENDER_TARGET };
-    private static readonly HashSet<uint> s_arrayBindRejected = new();
+    private static readonly HashSet<(uint Bind, bool Nv12)> s_arrayBindRejected = new();
 
     private bool TryInitFrames(bool nv12, int poolSize, uint bindFlags)
     {
