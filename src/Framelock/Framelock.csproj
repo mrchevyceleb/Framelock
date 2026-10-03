@@ -15,7 +15,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Framelock</AssemblyName>
     <RootNamespace>Framelock</RootNamespace>
-    <Version>1.1.3</Version>
+    <Version>1.1.4</Version>
     <StartupObject>Framelock.App</StartupObject>
     <Product>Framelock</Product>
     <Description>Frame-exact screen and gameplay recorder</Description>
