@@ -84,7 +84,10 @@ public static partial class Native
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr hIcon);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT pt);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+
+    private static readonly IntPtr DpiAwarenessPerMonitorV2 = new(-4);
 
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
@@ -230,16 +233,37 @@ public static partial class Native
     public static RECT GetVisibleBounds(IntPtr hwnd)
     {
         if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out RECT r, Marshal.SizeOf<RECT>()) == 0) return r;
-        GetWindowRect(hwnd, out r);
-        return r;
+        // DWM always returns physical pixels; keep the fallback in the same coordinate space.
+        var previousDpi = SetThreadDpiAwarenessContext(DpiAwarenessPerMonitorV2);
+        try
+        {
+            GetWindowRect(hwnd, out r);
+            return r;
+        }
+        finally
+        {
+            if (previousDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpi);
+        }
     }
 
+    /// <summary>The client area in physical screen pixels, regardless of the calling thread's DPI awareness.</summary>
     public static RECT GetClientScreenRect(IntPtr hwnd)
     {
-        GetClientRect(hwnd, out var c);
-        var p = new POINT(0, 0);
-        ClientToScreen(hwnd, ref p);
-        return new RECT(p.X, p.Y, p.X + c.Width, p.Y + c.Height);
+        // Capture frames and DWM bounds are physical pixels. A virtualized client rect on a
+        // scaled display would otherwise crop away part of the window before composition.
+        var previousDpi = SetThreadDpiAwarenessContext(DpiAwarenessPerMonitorV2);
+        try
+        {
+            if (!GetClientRect(hwnd, out var c)) return default;
+            var topLeft = new POINT(c.Left, c.Top);
+            if (!ClientToScreen(hwnd, ref topLeft)) return default;
+            // Apply one translation to both corners so moving windows cannot split the measurement.
+            return new RECT(topLeft.X, topLeft.Y, topLeft.X + c.Width, topLeft.Y + c.Height);
+        }
+        finally
+        {
+            if (previousDpi != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpi);
+        }
     }
 
     public static void ExcludeFromCapture(IntPtr hwnd, bool exclude) =>

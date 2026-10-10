@@ -30,8 +30,8 @@ public sealed class WgcSource : IDisposable
 
     private readonly D3DContext _d3d;
     private readonly GraphicsCaptureItem _item;
-    private readonly Direct3D11CaptureFramePool _pool;
-    private readonly GraphicsCaptureSession _session;
+    private Direct3D11CaptureFramePool _pool;
+    private GraphicsCaptureSession _session;
     private readonly DirectXPixelFormat _format;
     private SizeInt32 _poolSize;
 
@@ -64,16 +64,20 @@ public sealed class WgcSource : IDisposable
         _poolSize = _item.Size;
         _pool = Direct3D11CaptureFramePool.CreateFreeThreaded(d3d.WinRtDevice, _format, BufferCount, _poolSize);
         _session = _pool.CreateCaptureSession(_item);
-
-        try { _session.IsCursorCaptureEnabled = target.Cursor; } catch { }
-        try { _session.IsBorderRequired = false; } catch { }
-        // Without this Windows caps delivery at the display refresh / 60 Hz on some builds.
-        try { _session.MinUpdateInterval = TimeSpan.FromMilliseconds(1); } catch { }
-        if (target.Kind == CaptureTargetKind.Window)
-            try { _session.IncludeSecondaryWindows = true; } catch { }
-
-        _session.StartCapture();
+        StartCapture(_session);
         Log.Info($"Capture started: {target.Name} ({_poolSize.Width}x{_poolSize.Height}, {(Hdr ? "HDR FP16" : "SDR BGRA")})");
+    }
+
+    private void StartCapture(GraphicsCaptureSession session)
+    {
+        try { session.IsCursorCaptureEnabled = Target.Cursor; } catch { }
+        try { session.IsBorderRequired = false; } catch { }
+        // Without this Windows caps delivery at the display refresh / 60 Hz on some builds.
+        try { session.MinUpdateInterval = TimeSpan.FromMilliseconds(1); } catch { }
+        if (Target.Kind == CaptureTargetKind.Window)
+            try { session.IncludeSecondaryWindows = true; } catch { }
+
+        session.StartCapture();
     }
 
     /// <summary>Pulls the newest frame (if any) into <see cref="Srv"/>. Returns true when the image changed.</summary>
@@ -100,6 +104,7 @@ public sealed class WgcSource : IDisposable
         if (latest == null) return false;
 
         SizeInt32 content;
+        bool changed = false;
         using (latest)
         {
             content = latest.ContentSize;
@@ -108,22 +113,47 @@ public sealed class WgcSource : IDisposable
                 var desc = frameTex.Description;
                 int cw = Math.Min(content.Width, (int)desc.Width), ch = Math.Min(content.Height, (int)desc.Height);
                 var box = ComputeBox(cw, ch);
-                if (box.Width >= 2 && box.Height >= 2)
+                // Resize frames can contain a clipped or transitional image in the old pool.
+                // Keep the last complete image until the resized session supplies a fresh frame.
+                if (content.Width == _poolSize.Width && content.Height == _poolSize.Height &&
+                    content.Width <= desc.Width && content.Height <= desc.Height && box.Width >= 2 && box.Height >= 2)
                 {
                     EnsureTexture(box.Width, box.Height, desc.Format);
                     _d3d.Context.CopySubresourceRegion(_tex!, 0, 0, 0, 0, frameTex, 0, new Vortice.Mathematics.Box(box.Left, box.Top, 0, box.Right, box.Bottom, 1));
                     FramesReceived++;
+                    changed = true;
                 }
             }
         }
-        // Recreate only after the frame is released back to the pool.
+        // Rebuild only after the frame is released back to the pool.
         bool resized = content.Width != _poolSize.Width || content.Height != _poolSize.Height;
         if (resized && content.Width > 0 && content.Height > 0)
         {
-            _poolSize = content;
-            _pool.Recreate(_d3d.WinRtDevice, _format, BufferCount, _poolSize);
+            Direct3D11CaptureFramePool? newPool = null;
+            GraphicsCaptureSession? newSession = null;
+            try
+            {
+                _session.Dispose();
+                _pool.Dispose();
+                // Start a fresh session so even a static window supplies a complete frame after resize.
+                newPool = Direct3D11CaptureFramePool.CreateFreeThreaded(_d3d.WinRtDevice, _format, BufferCount, content);
+                newSession = newPool.CreateCaptureSession(_item);
+                StartCapture(newSession);
+                _pool = newPool;
+                _session = newSession;
+                _poolSize = content;
+                _clientBox = default;
+            }
+            catch (Exception ex)
+            {
+                try { newSession?.Dispose(); } catch { }
+                try { newPool?.Dispose(); } catch { }
+                IsClosed = true;
+                Log.Error($"Could not resize capture of {Target.Name}", ex);
+                return false;
+            }
         }
-        return true;
+        return changed;
     }
 
     private Native.RECT ComputeBox(int cw, int ch)
