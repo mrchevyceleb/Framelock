@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -122,17 +123,20 @@ public static class Toast
 
         if (n.FilePath != null && File.Exists(n.FilePath))
         {
-            var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
-            var open = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Open", Padding = new Thickness(10, 3, 10, 3), FontSize = 12 };
+            var actions = new WrapPanel { Margin = new Thickness(0, 2, 0, 0) };
+            var open = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Open", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(0, 6, 6, 0) };
             open.Click += (_, _) => MainViewModel.OpenFile(n.FilePath);
-            var reveal = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Show in folder", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(6, 0, 0, 0) };
+            var reveal = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Show in folder", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(0, 6, 6, 0) };
             reveal.Click += (_, _) => MainViewModel.RevealFile(n.FilePath);
             actions.Children.Add(open);
             actions.Children.Add(reveal);
             if (MediaFile.VideoExtensions.Contains(Path.GetExtension(n.FilePath).ToLowerInvariant()) && !n.FilePath.EndsWith(".recording.mkv", StringComparison.OrdinalIgnoreCase))
             {
+                var copy = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Copy video", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(0, 6, 6, 0), ToolTip = "Copy this video file to paste into another app" };
+                copy.Click += (_, _) => CopyVideo(n.FilePath, copy);
+                actions.Children.Add(copy);
                 // Game too loud? Rebalance game and mic right after stopping.
-                var fix = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Fix audio", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(6, 0, 0, 0), ToolTip = "Change the game and mic volume" };
+                var fix = new Button { Style = (Style)Application.Current.FindResource("GhostButton"), Content = "Fix audio", Padding = new Thickness(10, 3, 10, 3), FontSize = 12, Margin = new Thickness(0, 6, 6, 0), ToolTip = "Change the game and mic volume" };
                 fix.Click += (_, _) => RemixWindow.ShowFor(n.FilePath);
                 actions.Children.Add(fix);
             }
@@ -171,6 +175,31 @@ public static class Toast
             Dismiss(card);
         };
         return card;
+    }
+
+    private static void CopyVideo(string path, Button button)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                Show(new Notification("Couldn't copy video", "The video has been moved or deleted.", IsError: true));
+                return;
+            }
+            var data = new DataObject();
+            data.SetFileDropList(new StringCollection { Path.GetFullPath(path) });
+            // Match Explorer's Copy operation, and keep the clipboard usable after Framelock exits.
+            using var effect = new MemoryStream(BitConverter.GetBytes(1)); // DROPEFFECT_COPY
+            data.SetData("Preferred DropEffect", effect);
+            Clipboard.SetDataObject(data, true);
+            button.Content = "Copied";
+            button.ToolTip = "Video copied. Paste it into an app that accepts files.";
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Copy video failed: " + ex.Message);
+            Show(new Notification("Couldn't copy video", "The clipboard couldn't be updated. Try Copy video again.", IsError: true));
+        }
     }
 
     private static Button? FindButton(DependencyObject d)
