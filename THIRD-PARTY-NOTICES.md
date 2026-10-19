@@ -20,4 +20,5 @@ Other included components retain their respective licenses:
 - FFmpeg.AutoGen: MIT, https://github.com/Ruslan-B/FFmpeg.AutoGen
 - Vortice.Windows and Vortice.Mathematics: MIT, https://github.com/amerkoleci/Vortice.Windows
 - SharpGenTools runtime: MIT, https://github.com/SharpGenTools/SharpGenTools
-- Windows SDK .NET and CsWinRT runtime: MIT, https://github.com/microsoft/CsWinRT
+- CsWinRT runtime (WinRT.Runtime): MIT, https://github.com/microsoft/CsWinRT
+- Windows SDK .NET projection (Microsoft.Windows.SDK.NET): Microsoft Windows SDK license terms, https://aka.ms/WinSDKLicenseURL
