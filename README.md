@@ -1,10 +1,18 @@
 # Framelock
 
-Frame-exact screen and gameplay recorder for Windows 10 (2004+) / 11.
+[![Build](https://github.com/mrchevyceleb/Framelock/actions/workflows/build.yml/badge.svg)](https://github.com/mrchevyceleb/Framelock/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/mrchevyceleb/Framelock)](https://github.com/mrchevyceleb/Framelock/releases/latest)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE.txt)
+
+Frame-exact screen and gameplay recorder for Windows 10 (2004+) and Windows 11.
+
+Framelock records your screen, a single window or any region at up to 120 fps and writes the video at the exact size you pick, like 4K, 1440p, 1080p or a vertical Shorts frame, ready to upload. It uses your GPU's hardware encoder, keeps your game and mic audio editable after recording, and is free and open source.
 
 ## Download
 
-Download **Framelock-win-Setup.exe** from the [latest GitHub release](https://github.com/mrchevyceleb/Framelock/releases/latest) and run it. The installer includes .NET and FFmpeg; no separate runtime installation is needed. A portable ZIP is also available.
+Download **Framelock-win-Setup.exe** from the [latest release](https://github.com/mrchevyceleb/Framelock/releases/latest) and run it. The installer includes .NET and FFmpeg, so there is nothing else to install. A portable ZIP (**Framelock-win-Portable.zip**) is also available.
+
+The installer isn't code-signed yet, so Windows SmartScreen may warn the first time. Choose **More info → Run anyway**. Every release lists SHA-256 checksums for its files in `SHA256SUMS.txt`.
 
 Installed and packaged portable copies check for updates at startup and every six hours. Updates download in the background and install when you next open Framelock. A running recording is never restarted for an update. **General → Check for updates** checks immediately.
 
@@ -26,31 +34,47 @@ Installed and packaged portable copies check for updates at startup and every si
 - Silent recording controls: start, stop, pause, resume, markers, replay saves and screenshots produce no sound effects.
 - **Copy video** in the recording-finished notification copies the video file to your clipboard. Paste it into a folder or an app that accepts file attachments.
 
-## Build
+## System requirements
+
+- Windows 10 version 2004 (build 19041) or newer, or Windows 11, 64-bit (x64).
+- A DirectX 11 graphics card. NVIDIA (NVENC), AMD (AMF) and Intel (Quick Sync) hardware encoders are used when present; otherwise Framelock encodes on the CPU, which needs a fast processor for high resolutions and frame rates.
+- About 600 MB of disk space for the app and its update package, plus room for your recordings.
+
+Settings and logs are stored in `%APPDATA%\Framelock`. `Framelock.exe --tray` starts hidden in the tray, which is what "Start with Windows" uses.
+
+## Build from source
+
+You need Windows, the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) and PowerShell 7.
 
 ```powershell
-tools\get-ffmpeg.ps1          # fetches the FFmpeg 9.0 shared libraries (too large for git)
-cd src\Framelock
-dotnet build -c Release       # or: dotnet publish -c Release -o ..\..\publish
+git clone https://github.com/mrchevyceleb/Framelock.git
+cd Framelock
+pwsh tools/get-ffmpeg.ps1          # fetches the pinned FFmpeg 9.0 libraries (too large for git)
+dotnet build src/Framelock/Framelock.csproj -c Release
 ```
 
-This needs the .NET 10 SDK. The published folder is self-contained, so you can copy it anywhere and run `Framelock.exe`.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers running your build, the built-in self-test modes (`--selftest`, `--uishot`, `--regionshot`, `--remixcheck`) and what a pull request needs.
 
-## Dev aids
+## How releases work
 
-- `Framelock.exe --selftest seconds=6 fps=120 w=3840 h=2160 encoder=auto pause=1 replay=1` runs a headless end-to-end recording and writes a report to `%APPDATA%\Framelock\logs\selftest.txt`. Add `gpuload=2400` to run it while a separate process keeps the GPU at 100% like a game (more iterations = a slower game), and `motion=0` to skip the small moving test window.
-- Add `source=webcam fps=30` for a webcam-only selftest, or `webcam=1 camfps=30` for a screen recording with a webcam overlay. `fps` sets the recording rate; `camfps` only sets the overlay capture rate. Optional `camw=1280 camh=720 mirror=1 camera=<device-id>` selects the camera mode, mirroring and device.
-- `Framelock.exe --uishot=<folder>` renders every settings tab to a PNG.
-- `Framelock.exe --regionshot=<file.png>` renders the region picker's toolbar to a PNG without opening the full-screen picker.
-- `Framelock.exe --remixcheck=<video>` runs Fix audio on a copy of a recording, checks the new mix against the separate tracks, and writes `%APPDATA%\Framelock\logs\remixcheck.txt`.
-- `Framelock.exe --tray` starts hidden in the tray. This is the mode used by "Start with Windows".
+Every push to `master` ships. GitHub Actions builds the app on a clean Windows runner, packages it with [Velopack](https://velopack.io), and publishes a GitHub release one patch version above the last one (the `<Version>` in `src/Framelock/Framelock.csproj` is the minimum, so raising it starts a new minor or major series). Installed copies pick the release up through automatic updates. A push whose latest commit message contains `[skip release]` doesn't release.
 
-Settings and logs are stored in `%APPDATA%\Framelock`.
+Each release contains:
 
-## Releases
+- `Framelock-win-Setup.exe`, the installer, and `Framelock-win-Portable.zip`, the portable app
+- the Velopack update feed (`releases.win.json`, `RELEASES`, `assets.win.json` and the full `.nupkg` package)
+- `FFmpeg-runtime-win-x64.zip`, the exact FFmpeg build inside the app, which the next release build reuses so builds keep working after the upstream download expires
+- `FFmpeg-source.zip` and `FFmpeg-build-scripts.zip`, the matching FFmpeg source and build scripts
+- `LICENSE.txt`, `THIRD-PARTY-NOTICES.md`, and `SHA256SUMS.txt` with a checksum for every other file
 
-`tools/package-release.ps1 -Version 1.1.1` builds an installer, portable ZIP and update feed in an isolated `.dev/release-build` folder. The pinned Velopack tool is restored automatically. Push a version tag such as `v1.2.0` to build and publish the next release through GitHub Actions. Use stable `vMAJOR.MINOR.PATCH` tags. The workflow reuses the pinned FFmpeg runtime from the preceding release so upstream daily-build expiry does not break release builds.
+## Contributing
+
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Framelock is open source under [GPL-3.0-or-later](LICENSE.txt). Bundled components keep their own licenses; see [third-party notices](THIRD-PARTY-NOTICES.md). FFmpeg source and build-script archives accompany each release.
+Framelock is free software under the [GNU General Public License, version 3 or later](LICENSE.txt). Copyright 2026 Matt Johnston.
+
+Framelock ships FFmpeg 9.0 shared libraries from [BtbN's GPL build](https://github.com/BtbN/FFmpeg-Builds) (it includes GPL components such as x264 and x265), so the app as distributed is covered by the GPL. The FFmpeg license is installed beside the app in `ffmpeg/LICENSE.txt`, and every release includes the exact FFmpeg source and build scripts for the bundled build. Other bundled components (.NET, Velopack, NAudio, FFmpeg.AutoGen, Vortice.Windows and others) keep their own licenses; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Framelock is an independent project and isn't affiliated with FFmpeg, OBS Studio or any game or hardware vendor.
