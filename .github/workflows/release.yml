@@ -46,6 +46,10 @@ jobs:
       - name: Restore pinned FFmpeg runtime from the previous release
         shell: pwsh
         run: ./tools/restore-ffmpeg.ps1 -Repository $env:GITHUB_REPOSITORY
+      # Every push to master ships to every installed copy, so a recorder that can't record never gets packaged.
+      - name: Build and self-test
+        shell: pwsh
+        run: ./tools/selftest.ps1
       - name: Build installer and update packages
         id: package
         shell: pwsh

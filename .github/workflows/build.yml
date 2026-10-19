@@ -27,19 +27,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./tools/restore-ffmpeg.ps1
-      - name: Build
-        run: dotnet build src/Framelock/Framelock.csproj -c Release
-      # Runners have a desktop session (1024x768, software D3D11) but no GPU or microphone, so this records the display
-      # with the CPU encoder; a missing microphone is reported but doesn't fail the self-test.
-      - name: Self-test (record, pause, replay, remux and verify with ffprobe)
+      - name: Build and self-test (record, pause, replay, remux and verify with ffprobe)
         shell: pwsh
-        run: |
-          $exe = (Get-ChildItem src/Framelock/bin/Release -Recurse -Filter Framelock.exe | Select-Object -First 1).FullName
-          $logs = Join-Path $env:APPDATA 'Framelock/logs'
-          $p = [Diagnostics.Process]::Start($exe, [string[]]@('--selftest', 'seconds=4', 'fps=30', 'w=1280', 'h=720', 'pause=1', 'replay=1'))
-          if (!$p.WaitForExit(120000)) { $p.Kill(); $code = 'timeout' } else { $code = $p.ExitCode }
-          if (Test-Path "$logs/selftest.txt") { Get-Content "$logs/selftest.txt" } else { Write-Host 'No self-test report was written.' }
-          if ($code -ne 0) {
-            Get-ChildItem $logs -Filter 'framelock-*.log' | Sort-Object Name | Select-Object -Last 1 | Get-Content -Tail 60
-            throw "Self-test failed ($code)."
-          }
+        run: ./tools/selftest.ps1

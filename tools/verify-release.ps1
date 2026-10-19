@@ -10,6 +10,7 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $files = @(Get-ChildItem -LiteralPath $ReleaseDir -File)
 if (Get-ChildItem -LiteralPath $ReleaseDir -Directory) { throw 'Unexpected folders in the release.' }
 $required = 'Framelock-win-Setup.exe', 'Framelock-win-Portable.zip', "Framelock-$Version-full.nupkg", 'releases.win.json',
+    'RELEASES', 'assets.win.json',
     'FFmpeg-runtime-win-x64.zip', 'FFmpeg-source.zip', 'FFmpeg-build-scripts.zip', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'SHA256SUMS.txt'
 foreach ($name in $required) { if (!($files | Where-Object Name -eq $name)) { throw "Missing release file: $name" } }
 

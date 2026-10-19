@@ -10,25 +10,35 @@ Push-Location $repoRoot
 try {
     New-Item -ItemType Directory -Force .dev, third_party/ffmpeg | Out-Null
     $zip = '.dev/FFmpeg-runtime-win-x64.zip'
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
-        gh release download --repo $Repository --pattern FFmpeg-runtime-win-x64.zip --dir .dev --clobber
-        $valid = $LASTEXITCODE -eq 0
-    }
-    else {
-        try { Invoke-WebRequest "https://github.com/$Repository/releases/latest/download/FFmpeg-runtime-win-x64.zip" -OutFile $zip; $valid = $true }
-        catch { Write-Host "No FFmpeg runtime in the latest release: $($_.Exception.Message)"; $valid = $false }
-    }
+    $manifest = @(foreach ($line in Get-Content third_party/ffmpeg/SHA256SUMS.txt) {
+        if ($line -notmatch '^([a-f0-9]{64})  ([^/\\]+)$') { throw 'Invalid FFmpeg checksum manifest.' }
+        [pscustomobject]@{ Hash = $Matches[1]; Name = $Matches[2] }
+    })
+    # Any download, archive or checksum problem falls back to the pinned download instead of breaking the build.
     $files = @()
-    if ($valid) {
+    try {
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            gh release download --repo $Repository --pattern FFmpeg-runtime-win-x64.zip --dir .dev --clobber
+            if ($LASTEXITCODE) { throw 'No FFmpeg runtime in the latest release.' }
+        }
+        else {
+            Invoke-WebRequest "https://github.com/$Repository/releases/latest/download/FFmpeg-runtime-win-x64.zip" -OutFile $zip
+        }
+        Remove-Item .dev/previous-ffmpeg -Recurse -Force -ErrorAction SilentlyContinue
         Expand-Archive $zip .dev/previous-ffmpeg -Force
-        foreach ($line in Get-Content third_party/ffmpeg/SHA256SUMS.txt) {
-            if ($line -notmatch '^([a-f0-9]{64})  ([^/\\]+)$') { throw 'Invalid FFmpeg checksum manifest.' }
-            $expected = $Matches[1]; $path = Join-Path '.dev/previous-ffmpeg' $Matches[2]
-            if (!(Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { $valid = $false; break }
+        foreach ($entry in $manifest) {
+            $path = Join-Path '.dev/previous-ffmpeg' $entry.Name
+            if (!(Test-Path -LiteralPath $path) -or (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Hash) {
+                throw "The release copy of $($entry.Name) doesn't match the pinned runtime."
+            }
             $files += $path
         }
     }
-    if ($valid) { Copy-Item -LiteralPath $files -Destination third_party/ffmpeg -Force; Write-Host 'Restored the pinned FFmpeg runtime from the latest release.' }
+    catch {
+        Write-Host "Could not restore FFmpeg from the latest release: $($_.Exception.Message)"
+        $files = @()
+    }
+    if ($files.Count) { Copy-Item -LiteralPath $files -Destination third_party/ffmpeg -Force; Write-Host 'Restored the pinned FFmpeg runtime from the latest release.' }
     else { & (Join-Path $PSScriptRoot 'get-ffmpeg.ps1') }
     # The release download can fail (for example before the first release); its fallback succeeded.
     $global:LASTEXITCODE = 0
