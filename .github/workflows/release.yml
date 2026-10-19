@@ -67,6 +67,7 @@ jobs:
           compression-level: 0
           retention-days: 7
       - name: Publish GitHub release
+        id: publish
         if: env.PUBLISH == 'true'
         shell: pwsh
         env:
@@ -82,6 +83,7 @@ jobs:
           # Upload everything to a draft first, so a half-uploaded release never becomes the latest one.
           gh release create $env:TAG @($assets.FullName) --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Framelock $env:TAG" --notes-file release-notes.md --generate-notes --draft
           if ($LASTEXITCODE) { throw 'Release upload failed; nothing was published.' }
+          "draft_created=true" >> $env:GITHUB_OUTPUT
           $uploaded = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json assets | ConvertFrom-Json
           if ($LASTEXITCODE) { throw 'Could not read the draft release.' }
           foreach ($asset in $assets) {
@@ -90,8 +92,9 @@ jobs:
           gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
           if ($LASTEXITCODE) { throw 'Could not publish the completed release.' }
           Write-Host "Published $env:TAG from $env:GITHUB_SHA"
+      # Only ever removes the draft this run created.
       - name: Remove an unpublished draft
-        if: failure() && env.PUBLISH == 'true' && steps.version.outputs.tag != ''
+        if: failure() && steps.publish.outputs.draft_created == 'true'
         shell: pwsh
         env:
           TAG: ${{ steps.version.outputs.tag }}
