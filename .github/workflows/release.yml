@@ -18,7 +18,7 @@ permissions:
 
 # Publishing runs queue one at a time so versions and the FFmpeg runtime chain stay in order. Dry runs don't wait for them.
 concurrency:
-  group: ${{ (github.event_name == 'push' || inputs.publish) && 'windows-releases' || format('windows-release-dry-run-{0}', github.ref) }}
+  group: ${{ (github.event_name == 'push' || inputs.publish) && github.ref == 'refs/heads/master' && 'windows-releases' || format('windows-release-dry-run-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
