@@ -3,6 +3,9 @@ name: Windows release
 # Every push to master builds and publishes the next release (one patch above the latest; the csproj <Version> is the
 # minimum). Put [skip release] in the head commit message to push without releasing. Run it by hand with publish off to
 # build and package any branch without releasing; the files are uploaded as a workflow artifact instead.
+#
+# Only the two small jobs that pick the version and publish can write to the repo, and they install nothing. The build,
+# which restores NuGet packages and runs the recorder, only reads.
 on:
   push:
     branches: [master]
@@ -14,35 +17,60 @@ on:
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
-# Publishing runs queue one at a time so versions and the FFmpeg runtime chain stay in order. Dry runs don't wait for them.
+# Publishing runs go one at a time so versions and the FFmpeg runtime chain stay in order. GitHub keeps one waiting run,
+# so pushes made while a release builds ship together in the next one. Dry runs get their own group.
 concurrency:
   group: ${{ (github.event_name == 'push' || inputs.publish) && github.ref == 'refs/heads/master' && 'windows-releases' || format('windows-release-dry-run-{0}', github.ref) }}
   cancel-in-progress: false
 
+env:
+  PUBLISH: ${{ (github.event_name == 'push' || inputs.publish) && github.ref == 'refs/heads/master' }}
+
 jobs:
-  release:
+  plan:
+    name: Pick the version
     if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip release]')
-    runs-on: windows-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # Draft releases are only visible with write access.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     env:
       GH_TOKEN: ${{ github.token }}
-      PUBLISH: ${{ (github.event_name == 'push' || inputs.publish) && github.ref == 'refs/heads/master' }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-dotnet@v6.0.0
         with:
-          dotnet-version: '10.0.x'
+          persist-credentials: false
       - name: Select the next release version
         id: version
         shell: pwsh
         run: |
           ./tools/release-version.ps1 | Out-Null
-          if ($env:PUBLISH -ne 'true') {
+          # Stop a publishing run before the build if it could never publish.
+          if ($env:PUBLISH -eq 'true') { ./tools/release-guard.ps1 -Commit $env:GITHUB_SHA }
+          else {
             $reason = if ('${{ inputs.publish }}' -eq 'true') { 'Releases publish only from master, so this is a dry run.' } else { 'Dry run: nothing will be published.' }
             Write-Host "::notice::$reason The packaged files are uploaded as a workflow artifact."
           }
+
+  build:
+    name: Build and package
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }} # Read-only here: it downloads the previous release's FFmpeg runtime.
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: '10.0.x'
       - name: Restore pinned FFmpeg runtime from the previous release
         shell: pwsh
         run: ./tools/restore-ffmpeg.ps1 -Repository $env:GITHUB_REPOSITORY
@@ -53,36 +81,56 @@ jobs:
       - name: Build installer and update packages
         id: package
         shell: pwsh
-        run: ./tools/package-release.ps1 -Version '${{ steps.version.outputs.version }}'
+        run: ./tools/package-release.ps1 -Version '${{ needs.plan.outputs.version }}'
       - name: Verify release files
         shell: pwsh
-        run: ./tools/verify-release.ps1 -ReleaseDir '${{ steps.package.outputs.release_dir }}' -Version '${{ steps.version.outputs.version }}'
-      - name: Upload dry-run packages
-        if: env.PUBLISH != 'true'
+        run: ./tools/verify-release.ps1 -ReleaseDir '${{ steps.package.outputs.release_dir }}' -Version '${{ needs.plan.outputs.version }}'
+      # Dry runs keep these for a week; a publishing run hands them to the publish job.
+      - name: Keep the release files
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: Framelock-${{ steps.version.outputs.version }}-dry-run
+          name: Framelock-${{ needs.plan.outputs.version }}${{ env.PUBLISH != 'true' && '-dry-run' || '' }}
           path: ${{ steps.package.outputs.release_dir }}
           if-no-files-found: error
           compression-level: 0
-          retention-days: 7
+          retention-days: ${{ env.PUBLISH == 'true' && 1 || 7 }}
+
+  publish:
+    name: Publish
+    needs: [plan, build]
+    if: (github.event_name == 'push' || inputs.publish) && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      # Only the release scripts run here; no packages are restored.
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: Framelock-${{ needs.plan.outputs.version }}
+          path: release
       - name: Publish GitHub release
         id: publish
-        if: env.PUBLISH == 'true'
         shell: pwsh
-        env:
-          RELEASE_DIR: ${{ steps.package.outputs.release_dir }}
-          TAG: ${{ steps.version.outputs.tag }}
         run: |
+          ./tools/verify-release.ps1 -ReleaseDir release -Version $env:VERSION
+          ./tools/release-guard.ps1 -Commit $env:GITHUB_SHA
           gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG" --silent 2>$null
           if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists; not attaching a release to another commit." }
           @'
           Download **Framelock-win-Setup.exe** to install, or **Framelock-win-Portable.zip** for a portable copy. Installed copies download this update automatically and apply it the next time you open Framelock.
           '@ | Set-Content -LiteralPath release-notes.md -Encoding utf8
-          $assets = Get-ChildItem -LiteralPath $env:RELEASE_DIR -File
-          # Upload everything to a draft first, so a half-uploaded release never becomes the latest one.
+          $assets = Get-ChildItem -LiteralPath release -File
           # Marked before the upload so a half-uploaded draft from this run is still cleaned up.
           "draft_created=true" >> $env:GITHUB_OUTPUT
+          # Upload everything to a draft first, so a half-uploaded release never becomes the latest one.
           gh release create $env:TAG @($assets.FullName) --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Framelock $env:TAG" --notes-file release-notes.md --generate-notes --draft
           if ($LASTEXITCODE) { throw 'Release upload failed; nothing was published.' }
           $uploaded = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json assets | ConvertFrom-Json
@@ -97,8 +145,6 @@ jobs:
       - name: Remove an unpublished draft
         if: failure() && steps.publish.outputs.draft_created == 'true'
         shell: pwsh
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
         run: |
           $draft = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft 2>$null
           if ($draft -eq 'true') { gh release delete $env:TAG --repo $env:GITHUB_REPOSITORY --yes }
