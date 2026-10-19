@@ -140,18 +140,37 @@ jobs:
           $draft = gh api -X POST "repos/$repo/releases" -f "tag_name=$env:TAG" -f "target_commitish=$env:GITHUB_SHA" -f "name=Framelock $env:TAG" -f "body=$body" -F draft=true -F generate_release_notes=true | ConvertFrom-Json
           if ($LASTEXITCODE -or !$draft.id) { throw 'Could not create the draft release.' }
           "release_id=$($draft.id)" >> $env:GITHUB_OUTPUT
-          $assets = Get-ChildItem -LiteralPath release -File
-          gh release upload $env:TAG @($assets.FullName) --repo $repo
-          if ($LASTEXITCODE) { throw 'Release upload failed; nothing was published.' }
-          $uploaded = gh api "repos/$repo/releases/$($draft.id)" | ConvertFrom-Json
-          if ($LASTEXITCODE) { throw 'Could not read the draft release.' }
-          foreach ($asset in $assets) {
-            if (!($uploaded.assets | Where-Object { $_.name -eq $asset.Name -and $_.size -eq $asset.Length })) { throw "Draft release is missing $($asset.Name)." }
+          # Tag lookups and the release list lag a new draft by a few seconds, so upload to the draft's id. curl streams
+          # each file with its length and reads the token from stdin, never the command line.
+          $uploadUrl = $draft.upload_url -replace '\{.*\}$', ''
+          $files = @(Get-ChildItem -LiteralPath release -File)
+          if (!$files) { throw 'No release files to upload.' }
+          foreach ($file in $files) {
+            $response = "header = `"Authorization: Bearer $env:GH_TOKEN`"" | curl -fsS --config - -X POST -H 'Content-Type: application/octet-stream' -T $file.FullName "$($uploadUrl)?name=$([uri]::EscapeDataString($file.Name))"
+            if ($LASTEXITCODE) { throw "Uploading $($file.Name) failed; nothing was published." }
+            $asset = $response | ConvertFrom-Json
+            $hash = 'sha256:' + (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+            # The upload response normally carries the digest; if GitHub is still hashing, ask again by the asset's id.
+            for ($try = 0; !$asset.digest -and $try -lt 10; $try++) {
+              Start-Sleep -Seconds 3
+              $read = gh api "repos/$repo/releases/assets/$($asset.id)" 2>$null
+              if ($LASTEXITCODE -eq 0) { $asset = $read | ConvertFrom-Json }
+              $global:LASTEXITCODE = 0
+            }
+            if ($asset.name -ne $file.Name -or $asset.state -ne 'uploaded' -or $asset.size -ne $file.Length -or $asset.digest -ne $hash) { throw "Draft release has a missing or damaged $($file.Name)." }
           }
           gh api -X PATCH "repos/$repo/releases/$($draft.id)" -F draft=false -f make_latest=true --silent
           if ($LASTEXITCODE) { throw 'Could not publish the completed release.' }
-          $live = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
-          if ($LASTEXITCODE -or $live.id -ne $draft.id) { throw "$env:TAG did not become the latest release." }
+          $live = gh api "repos/$repo/releases/$($draft.id)" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $live.draft -or $live.prerelease -or $live.tag_name -ne $env:TAG -or $live.target_commitish -ne $env:GITHUB_SHA) { throw "GitHub did not confirm $env:TAG as published." }
+          # The latest-release lookup can trail the publish by a few seconds.
+          for ($try = 0; $try -lt 10; $try++) {
+            $latest = gh api "repos/$repo/releases/latest" --jq .id 2>$null
+            if ($LASTEXITCODE -eq 0 -and "$latest" -eq "$($draft.id)") { break }
+            $global:LASTEXITCODE = 0
+            Start-Sleep -Seconds 3
+          }
+          if ("$latest" -ne "$($draft.id)") { throw "$env:TAG is published but GitHub has not made it the latest release. Check the releases page." }
           Write-Host "Published $env:TAG from $env:GITHUB_SHA"
       - name: Remove this run's unpublished draft
         if: failure() && steps.publish.outputs.release_id != ''
