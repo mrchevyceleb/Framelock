@@ -124,6 +124,9 @@ jobs:
           ./tools/verify-release.ps1 -ReleaseDir release -Version $env:VERSION
           ./tools/release-guard.ps1 -Commit $env:GITHUB_SHA
           $repo = $env:GITHUB_REPOSITORY
+          $current = gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null
+          if ($LASTEXITCODE -eq 0 -and [version]$current.TrimStart('v') -ge [version]$env:VERSION) { throw "$current is already out, so $env:TAG would be a step back." }
+          $global:LASTEXITCODE = 0
           $probe = gh api "repos/$repo/git/ref/tags/$env:TAG" 2>&1
           if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists; not attaching a release to another commit." }
           if ("$probe" -notmatch 'HTTP 404') { throw "Could not check whether $env:TAG exists: $probe" }
