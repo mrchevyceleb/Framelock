@@ -123,34 +123,39 @@ jobs:
         run: |
           ./tools/verify-release.ps1 -ReleaseDir release -Version $env:VERSION
           ./tools/release-guard.ps1 -Commit $env:GITHUB_SHA
-          gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG" --silent 2>$null
+          $repo = $env:GITHUB_REPOSITORY
+          $probe = gh api "repos/$repo/git/ref/tags/$env:TAG" 2>&1
           if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists; not attaching a release to another commit." }
+          if ("$probe" -notmatch 'HTTP 404') { throw "Could not check whether $env:TAG exists: $probe" }
           # A draft's tag doesn't exist until it publishes, so also look for any release already using this tag.
-          $existing = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ('.[] | select(.tag_name == "' + $env:TAG + '") | .id')
+          $existing = gh api --paginate "repos/$repo/releases?per_page=100" --jq ('.[] | select(.tag_name == "' + $env:TAG + '") | .id')
           if ($LASTEXITCODE) { throw 'Could not list existing releases.' }
           if ($existing) { throw "A release already uses $env:TAG; leaving it alone." }
-          @'
-          Download **Framelock-win-Setup.exe** to install, or **Framelock-win-Portable.zip** for a portable copy. Installed copies download this update automatically and apply it the next time you open Framelock.
-          '@ | Set-Content -LiteralPath release-notes.md -Encoding utf8
+          $body = 'Download **Framelock-win-Setup.exe** to install, or **Framelock-win-Portable.zip** for a portable copy. Installed copies download this update automatically and apply it the next time you open Framelock.'
+          # Upload everything to a draft first, so a half-uploaded release never becomes the latest one. The draft's id is
+          # recorded the moment it exists, so cleanup only ever removes this run's own draft.
+          $draft = gh api -X POST "repos/$repo/releases" -f "tag_name=$env:TAG" -f "target_commitish=$env:GITHUB_SHA" -f "name=Framelock $env:TAG" -f "body=$body" -F draft=true -F generate_release_notes=true | ConvertFrom-Json
+          if ($LASTEXITCODE -or !$draft.id) { throw 'Could not create the draft release.' }
+          "release_id=$($draft.id)" >> $env:GITHUB_OUTPUT
           $assets = Get-ChildItem -LiteralPath release -File
-          # Marked before the upload so a half-uploaded draft from this run is still cleaned up.
-          "draft_created=true" >> $env:GITHUB_OUTPUT
-          # Upload everything to a draft first, so a half-uploaded release never becomes the latest one.
-          gh release create $env:TAG @($assets.FullName) --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "Framelock $env:TAG" --notes-file release-notes.md --generate-notes --draft
+          gh release upload $env:TAG @($assets.FullName) --repo $repo
           if ($LASTEXITCODE) { throw 'Release upload failed; nothing was published.' }
-          $uploaded = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json assets | ConvertFrom-Json
+          $uploaded = gh api "repos/$repo/releases/$($draft.id)" | ConvertFrom-Json
           if ($LASTEXITCODE) { throw 'Could not read the draft release.' }
           foreach ($asset in $assets) {
             if (!($uploaded.assets | Where-Object { $_.name -eq $asset.Name -and $_.size -eq $asset.Length })) { throw "Draft release is missing $($asset.Name)." }
           }
-          gh release edit $env:TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          gh api -X PATCH "repos/$repo/releases/$($draft.id)" -F draft=false -f make_latest=true --silent
           if ($LASTEXITCODE) { throw 'Could not publish the completed release.' }
+          $live = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $live.id -ne $draft.id) { throw "$env:TAG did not become the latest release." }
           Write-Host "Published $env:TAG from $env:GITHUB_SHA"
-      # Runs only once this run has started its own upload, so a failed build never touches another release.
-      - name: Remove an unpublished draft
-        if: failure() && steps.publish.outputs.draft_created == 'true'
+      - name: Remove this run's unpublished draft
+        if: failure() && steps.publish.outputs.release_id != ''
         shell: pwsh
+        env:
+          RELEASE_ID: ${{ steps.publish.outputs.release_id }}
         run: |
-          $draft = gh release view $env:TAG --repo $env:GITHUB_REPOSITORY --json isDraft --jq .isDraft 2>$null
-          if ($draft -eq 'true') { gh release delete $env:TAG --repo $env:GITHUB_REPOSITORY --yes }
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -eq 0 -and $release.draft) { gh api -X DELETE "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" --silent }
           $global:LASTEXITCODE = 0
