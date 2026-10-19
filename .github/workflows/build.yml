@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore pinned FFmpeg runtime from the latest release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/restore-ffmpeg.ps1
+      - name: Build
+        run: dotnet build src/Framelock/Framelock.csproj -c Release
+      - name: Self-test probe
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem src/Framelock/bin/Release -Recurse -Filter Framelock.exe | Select-Object -First 1).FullName
+          Write-Host "exe: $exe"
+          $sessions = query user 2>&1; Write-Host "sessions: $sessions"
+          Write-Host "session id: $([Diagnostics.Process]::GetCurrentProcess().SessionId) interactive: $([Environment]::UserInteractive)"
+          Get-CimInstance Win32_VideoController | ForEach-Object { Write-Host "gpu: $($_.Name) $($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)" }
+          Get-CimInstance Win32_SoundDevice | ForEach-Object { Write-Host "sound: $($_.Name)" }
+          $runs = @(
+            @('--selftest', 'seconds=4', 'fps=30', 'w=1280', 'h=720', 'encoder=auto'),
+            @('--selftest', 'seconds=4', 'fps=30', 'w=1280', 'h=720', 'encoder=auto', 'mic=0', 'desktop=0'),
+            @('--selftest', 'seconds=4', 'fps=30', 'w=1280', 'h=720', 'encoder=libx264', 'mic=0', 'desktop=0', 'pause=1', 'replay=1')
+          )
+          foreach ($a in $runs) {
+            Write-Host "=== $($a -join ' ')"
+            Remove-Item "$env:APPDATA/Framelock/logs/selftest.txt" -ErrorAction SilentlyContinue
+            $p = [Diagnostics.Process]::Start($exe, [string[]]$a)
+            if (!$p.WaitForExit(180000)) { $p.Kill(); Write-Host 'TIMED OUT' }
+            else { Write-Host "exit: $($p.ExitCode)" }
+            if (Test-Path "$env:APPDATA/Framelock/logs/selftest.txt") { Get-Content "$env:APPDATA/Framelock/logs/selftest.txt" } else { Write-Host 'no report' }
+          }
+          Write-Host '=== last log'
+          Get-ChildItem "$env:APPDATA/Framelock/logs" -Filter 'framelock-*.log' | Sort-Object Name | Select-Object -Last 1 | Get-Content -Tail 80
