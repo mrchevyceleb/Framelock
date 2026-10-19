@@ -7,10 +7,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $latest = gh api "repos/$Repository/releases/latest" --jq .tag_name 2>$null
 if ($LASTEXITCODE) {
-    gh api "repos/$Repository/releases?per_page=1" --jq length | Out-Null
-    if ($LASTEXITCODE) { throw 'Could not read the latest release.' }
+    # Only "no stable release at all" is fine; any other failure stops the release.
+    $stable = gh api --paginate "repos/$Repository/releases?per_page=100" --jq '.[] | select((.draft or .prerelease) | not) | .tag_name'
+    if ($LASTEXITCODE -or $stable) { throw 'Could not read the latest release.' }
     $global:LASTEXITCODE = 0
-    return # No published release yet.
+    return
 }
 $target = gh api "repos/$Repository/git/ref/tags/$latest" | ConvertFrom-Json
 if ($LASTEXITCODE) { throw "Could not read the $latest tag." }

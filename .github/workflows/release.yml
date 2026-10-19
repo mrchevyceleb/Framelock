@@ -20,9 +20,10 @@ permissions:
   contents: read
 
 # Publishing runs go one at a time so versions and the FFmpeg runtime chain stay in order. GitHub keeps one waiting run,
-# so pushes made while a release builds ship together in the next one. Dry runs get their own group.
+# so pushes made while a release builds ship together in the next one. Dry runs and skipped pushes get their own group,
+# so they never take a waiting release's place.
 concurrency:
-  group: ${{ (github.event_name == 'push' || inputs.publish) && github.ref == 'refs/heads/master' && 'windows-releases' || format('windows-release-dry-run-{0}', github.ref) }}
+  group: ${{ ((github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip release]')) || inputs.publish) && github.ref == 'refs/heads/master' && 'windows-releases' || format('windows-release-other-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
@@ -42,7 +43,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Select the next release version
@@ -65,10 +66,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }} # Read-only here: it downloads the previous release's FFmpeg runtime.
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-dotnet@v6.0.0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
       - name: Restore pinned FFmpeg runtime from the previous release
@@ -87,7 +88,7 @@ jobs:
         run: ./tools/verify-release.ps1 -ReleaseDir '${{ steps.package.outputs.release_dir }}' -Version '${{ needs.plan.outputs.version }}'
       # Dry runs keep these for a week; a publishing run hands them to the publish job.
       - name: Keep the release files
-        uses: actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Framelock-${{ needs.plan.outputs.version }}${{ env.PUBLISH != 'true' && '-dry-run' || '' }}
           path: ${{ steps.package.outputs.release_dir }}
@@ -109,10 +110,10 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
     steps:
       # Only the release scripts run here; no packages are restored.
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Framelock-${{ needs.plan.outputs.version }}
           path: release
@@ -124,6 +125,10 @@ jobs:
           ./tools/release-guard.ps1 -Commit $env:GITHUB_SHA
           gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:TAG" --silent 2>$null
           if ($LASTEXITCODE -eq 0) { throw "Tag $env:TAG already exists; not attaching a release to another commit." }
+          # A draft's tag doesn't exist until it publishes, so also look for any release already using this tag.
+          $existing = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq ('.[] | select(.tag_name == "' + $env:TAG + '") | .id')
+          if ($LASTEXITCODE) { throw 'Could not list existing releases.' }
+          if ($existing) { throw "A release already uses $env:TAG; leaving it alone." }
           @'
           Download **Framelock-win-Setup.exe** to install, or **Framelock-win-Portable.zip** for a portable copy. Installed copies download this update automatically and apply it the next time you open Framelock.
           '@ | Set-Content -LiteralPath release-notes.md -Encoding utf8
