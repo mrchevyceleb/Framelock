@@ -65,7 +65,9 @@ Get-Content $env:APPDATA\Framelock\logs\selftest.txt
 Every push to `master` publishes a new release, so `master` must always be ready to ship, and merging a pull request releases it to every installed copy through automatic updates.
 
 - The version is one patch above the latest release (1.1.5, then 1.1.6, and so on). To start a new minor or major series, raise `<Version>` in `src/Framelock/Framelock.csproj`; it is the minimum the next release can use.
-- To push to `master` without releasing, put `[skip release]` in the latest commit message of the push (when merging a pull request, in the merge or squash commit message).
+- To push to `master` without releasing, put `[skip release]` in the latest commit message of the push (when merging a pull request, in the merge or squash commit message). The check matches anywhere in that message, including its body.
+- Releases build one at a time. Pushes made while a release is building ship together in the next release. A commit that is already released, or older than the latest release (a re-run of an old job, for example), is never published.
+- Only the small jobs that pick the version and publish can write to the repository, and neither restores packages. The build, which restores NuGet packages and runs the recorder, can only read.
 - Maintainers can build any branch without releasing it: **Actions → Windows release → Run workflow**, pick the branch and untick **publish**, or run `gh workflow run release.yml --ref <branch> -f publish=false`. The installer, portable ZIP and update packages are attached to the run as an artifact. Running it on `master` with **publish** ticked publishes a release by hand.
 - To package locally, run `pwsh tools/package-release.ps1 -Version 1.2.3`, then `pwsh tools/verify-release.ps1 -ReleaseDir <folder it prints> -Version 1.2.3`.
 
